@@ -11,13 +11,8 @@ import com.tacticom.app.Bus
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.math.sqrt
+import kotlin.concurrent.thread
 
-/**
- * 48 kHz broadcast-quality capture/playback.
- * Chunks are 10 ms = 960 bytes, deliberately under the 1500-byte Wi-Fi MTU
- * so packets never fragment. The playback queue is capped: when it overflows
- * the OLDEST chunk is dropped so playback always stays live (anti-backlog).
- */
 class AudioEngine(private val ctx: Context) {
     companion object {
         const val RATE = 48000
@@ -30,7 +25,7 @@ class AudioEngine(private val ctx: Context) {
 
     private var record: AudioRecord? = null
     private var track: AudioTrack? = null
-    private val queue = LinkedBlockingQueue<ByteArray>(60) // 600 ms cap
+    private val queue = LinkedBlockingQueue<ByteArray>(60)
     @Volatile private var capturing = false
     @Volatile private var playing = false
 
@@ -105,14 +100,14 @@ class AudioEngine(private val ctx: Context) {
     }
 
     fun feed(data: ByteArray) {
-        if (queue.remainingCapacity() == 0) queue.poll() // drop oldest, stay live
+        if (queue.remainingCapacity() == 0) queue.poll()
         queue.offer(data)
     }
 
     fun applyRouting() {
         if (earpiece) {
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            audioManager.isSpeakerphoneOn = false // small call speaker
+            audioManager.isSpeakerphoneOn = false
         } else {
             audioManager.mode = AudioManager.MODE_NORMAL
             audioManager.isSpeakerphoneOn = false
