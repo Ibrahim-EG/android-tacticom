@@ -12,8 +12,14 @@ object Controller {
     fun startService(c: Context) {
         appContext = c.applicationContext
         val i = Intent(c, TacticomService::class.java)
-        // Use the safe wrapper so Android 7 never sees startForegroundService()
-        Compat.startServiceSafe(c, i)
+        
+        // Reflection for startForegroundService (Android 8+)
+        try {
+            val method = Context::class.java.getMethod("startForegroundService", Intent::class.java)
+            method.invoke(c, i)
+        } catch (e: Exception) {
+            c.startService(i)
+        }
     }
 
     fun initAudio() {
