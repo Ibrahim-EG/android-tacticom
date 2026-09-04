@@ -49,7 +49,6 @@ class TacticomService : Service() {
         Controller.appContext = applicationContext
         Controller.initAudio()
         
-        // Run network setup on a background thread to prevent ANR/crashes on older devices
         Thread { NetworkManager.start(this) }.start()
         
         registerNetworkCallback()
@@ -114,12 +113,19 @@ class TacticomService : Service() {
                 start()
             }
 
-            // Use the old API 1 way to get vibrator
             vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
             
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // Call the quarantine wrapper so Android 7 never sees VibrationEffect
-                Compat.vibrate(vibrator)
+            if (Build.VERSION.SDK_INT >= 26) {
+                try {
+                    val effectClass = Class.forName("android.os.VibrationEffect")
+                    val createMethod = effectClass.getMethod("createWaveform", LongArray::class.java, Int::class.javaPrimitiveType)
+                    val effect = createMethod.invoke(null, longArrayOf(0, 800, 400), 0)
+                    val vibrateMethod = Vibrator::class.java.getMethod("vibrate", effectClass)
+                    vibrateMethod.invoke(vibrator, effect)
+                } catch (e: Exception) {
+                    @Suppress("DEPRECATION")
+                    vibrator?.vibrate(longArrayOf(0, 800, 400), 0)
+                }
             } else {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(longArrayOf(0, 800, 400), 0)
