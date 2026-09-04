@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.tacticom.app"
-        minSdk = 24  // Dropped from 26 to support Android 7
+        minSdk = 24
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
@@ -19,6 +19,7 @@ android {
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true // <--- CRITICAL FIX FOR ANDROID 7
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -26,6 +27,9 @@ android {
 }
 
 dependencies {
+    // This library backports Java 8+ features for Android 7/8/9
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
