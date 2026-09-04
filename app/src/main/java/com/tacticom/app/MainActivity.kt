@@ -1,5 +1,4 @@
 @file:OptIn(ExperimentalMaterial3Api::class)
-@file:Suppress("OPT_IN_USAGE")
 
 package com.tacticom.app
 
@@ -52,8 +51,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
-import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -65,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -89,15 +87,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             val dark by Bus.dark.collectAsState()
             TacticomTheme(dark = dark) {
-                val wsc = calculateWindowSizeClass(this)
-                Root(wsc.widthSizeClass)
+                Root()
             }
         }
     }
 }
 
 @Composable
-fun Root(widthClass: WindowWidthSizeClass) {
+fun Root() {
     var tab by remember { mutableStateOf(0) }
     val inSession by Bus.inSession.collectAsState()
     LaunchedEffect(inSession) { if (inSession != null) tab = 1 }
@@ -108,7 +105,11 @@ fun Root(widthClass: WindowWidthSizeClass) {
         "Profile" to Icons.Default.Person
     )
 
-    if (widthClass == WindowWidthSizeClass.Compact) {
+    // Use screen width to determine Tablet vs Phone layout (stable API, no experimental flags)
+    val configuration = LocalConfiguration.current
+    val isTablet = configuration.screenWidthDp >= 600
+
+    if (!isTablet) {
         Scaffold(
             topBar = { TopAppBar(title = { Text("TACTICOM", fontWeight = FontWeight.ExtraBold) }) },
             bottomBar = {
