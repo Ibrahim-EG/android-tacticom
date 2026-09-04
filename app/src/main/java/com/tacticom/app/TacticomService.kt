@@ -81,7 +81,6 @@ class TacticomService : Service() {
         return START_STICKY
     }
 
-    /** Restarts sockets when Wi-Fi connects/drops or the IP changes (subnet hop). */
     private fun registerNetworkCallback() {
         val cm = getSystemService(ConnectivityManager::class.java)
         val req = NetworkRequest.Builder()
@@ -104,8 +103,6 @@ class TacticomService : Service() {
         Controller.server = SessionServer { from -> startRing(from) }.apply { start() }
         Controller.discovery = Discovery(this).apply { start(Controller.server?.port() ?: 0) }
     }
-
-    // ------------------------- RINGING -------------------------
 
     fun startRing(from: String) {
         if (player != null) return
@@ -131,7 +128,7 @@ class TacticomService : Service() {
             val notif = NotificationCompat.Builder(this, App.CH_RING)
                 .setContentTitle("TACTICOM — Incoming Ring")
                 .setContentText("$from wants your attention")
-                .setSmallIcon(android.R.drawable.stat_notify_call)
+                .setSmallIcon(android.R.drawable.stat_sys_phone_call)
                 .addAction(android.R.drawable.ic_delete, "STOP RINGING", stopIntent)
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
