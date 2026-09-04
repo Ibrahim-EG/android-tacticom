@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3WindowSizeClassApi::class)
 
 package com.tacticom.app
 
@@ -23,10 +23,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
@@ -37,6 +35,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +52,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,7 +61,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.awaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.activity.result.contract.ActivityResultContracts
@@ -124,7 +126,6 @@ fun Root(widthClass: WindowWidthSizeClass) {
             Box(Modifier.padding(pad)) { Screen(tab) }
         }
     } else {
-        // Tablet / landscape: side rail + wide content
         Row(Modifier.fillMaxSize()) {
             NavigationRail {
                 items.forEachIndexed { i, p ->
@@ -149,8 +150,6 @@ fun Screen(tab: Int) {
         else -> ProfileScreen()
     }
 }
-
-// ------------------------------ LOBBY ------------------------------
 
 @Composable
 fun LobbyScreen() {
@@ -244,8 +243,6 @@ fun LobbyScreen() {
     }
 }
 
-// ---------------------------- INTERCOM -----------------------------
-
 @Composable
 fun IntercomScreen() {
     val session by Bus.inSession.collectAsState()
@@ -272,7 +269,6 @@ fun IntercomScreen() {
         Text("as $myName • ${session!!.count} online", style = MaterialTheme.typography.bodySmall)
         Text(presence.joinToString(", "), style = MaterialTheme.typography.bodySmall)
 
-        // VU meter
         Box(Modifier.fillMaxWidth().height(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface)) {
             Box(Modifier.fillMaxWidth(fraction = vu.coerceIn(0f, 1f)).height(8.dp)
                 .clip(CircleShape).background(MaterialTheme.colorScheme.secondary))
@@ -295,11 +291,13 @@ fun IntercomScreen() {
                 .clip(CircleShape)
                 .background(color)
                 .pointerInput(live) {
-                    while (true) {
-                        awaitFirstDown()
-                        if (!live) Controller.setTransmit(true)
-                        waitForUpOrCancellation()
-                        if (!live) Controller.setTransmit(false)
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitFirstDown()
+                            if (!live) Controller.setTransmit(true)
+                            waitForUpOrCancellation()
+                            if (!live) Controller.setTransmit(false)
+                        }
                     }
                 },
             contentAlignment = Alignment.Center
@@ -316,10 +314,9 @@ fun IntercomScreen() {
     }
 }
 
-// ---------------------------- PROFILE ------------------------------
-
 @Composable
 fun ProfileScreen() {
+    val context = LocalContext.current
     var refresh by remember { mutableStateOf(0) }
     val profiles = remember(refresh) { Store.profiles() }
     val active = remember(refresh) { Store.activeProfile() }
@@ -332,7 +329,7 @@ fun ProfileScreen() {
     ) { uri ->
         if (uri != null) {
             runCatching {
-                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             val list = Store.profiles().toMutableList()
             val idx = list.indexOfFirst { it.id == active.id }
@@ -352,7 +349,6 @@ fun ProfileScreen() {
         profiles.forEach { p ->
             Card(Modifier.fillMaxWidth().clickable {
                 Store.activeProfileId = p.id
-                Bus.dark.value = Bus.dark.value // no-op keep
                 refresh++
             }) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
