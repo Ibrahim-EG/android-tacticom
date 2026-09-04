@@ -11,15 +11,15 @@ object Controller {
 
     fun startService(c: Context) {
         appContext = c.applicationContext
-        c.startForegroundService(Intent(c, TacticomService::class.java))
+        val i = Intent(c, TacticomService::class.java)
+        // Use the safe wrapper so Android 7 never sees startForegroundService()
+        Compat.startServiceSafe(c, i)
     }
 
     fun initAudio() {
         val ctx = appContext ?: return
         if (audio == null) {
-            audio = AudioEngine(ctx).apply {
-                onChunk = { NetworkManager.sendAudio(it) }
-            }
+            audio = AudioEngine(ctx).apply { onChunk = { NetworkManager.sendAudio(it) } }
         }
     }
 
