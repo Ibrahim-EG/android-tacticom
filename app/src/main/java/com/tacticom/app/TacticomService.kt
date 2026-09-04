@@ -27,15 +27,12 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.tacticom.app.audio.AudioEngine
-import com.tacticom.app.net.Discovery
-import com.tacticom.app.net.SessionServer
+import com.tacticom.app.net.NetworkManager
 
 class TacticomService : Service() {
 
     companion object {
         @Volatile var instance: TacticomService? = null
-        fun ring(from: String) { instance?.startRing(from) }
     }
 
     private var player: MediaPlayer? = null
@@ -50,11 +47,9 @@ class TacticomService : Service() {
         super.onCreate()
         instance = this
         Store.init(this)
-        Controller.server = SessionServer { from -> startRing(from) }.apply { start() }
-        Controller.discovery = Discovery(this).apply { start(Controller.server?.port() ?: 0) }
-        Controller.audio = AudioEngine(this).apply {
-            onChunk = { Controller.conn?.sendPcm(it) }
-        }
+        Controller.appContext = applicationContext
+        Controller.initAudio()
+        NetworkManager.start(this)
         registerNetworkCallback()
         Bus.status.value = "ONLINE"
     }
@@ -97,11 +92,8 @@ class TacticomService : Service() {
         val now = System.currentTimeMillis()
         if (now - lastRestart < 3000) return
         lastRestart = now
-        Controller.discovery?.stop()
-        Controller.server?.stop()
-        Controller.conn?.close()
-        Controller.server = SessionServer { from -> startRing(from) }.apply { start() }
-        Controller.discovery = Discovery(this).apply { start(Controller.server?.port() ?: 0) }
+        NetworkManager.stop()
+        NetworkManager.start(this)
     }
 
     fun startRing(from: String) {
@@ -118,8 +110,14 @@ class TacticomService : Service() {
                 isLooping = true
                 start()
             }
+
             vibrator = getSystemService(Vibrator::class.java)
-            vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 800, 400), 0))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 800, 400), 0))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(longArrayOf(0, 800, 400), 0)
+            }
 
             val stopIntent = PendingIntent.getBroadcast(
                 this, 2, Intent(this, RingStopReceiver::class.java),
@@ -168,9 +166,7 @@ class TacticomService : Service() {
 
     override fun onDestroy() {
         stopRing()
-        Controller.discovery?.stop()
-        Controller.server?.stop()
-        Controller.conn?.close()
+        NetworkManager.stop()
         instance = null
         super.onDestroy()
     }
