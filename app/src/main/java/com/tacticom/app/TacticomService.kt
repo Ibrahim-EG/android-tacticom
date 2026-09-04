@@ -21,7 +21,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.os.VibrationEffect
 import android.os.Vibrator
 import android.Manifest
 import android.content.pm.PackageManager
@@ -49,7 +48,10 @@ class TacticomService : Service() {
         Store.init(this)
         Controller.appContext = applicationContext
         Controller.initAudio()
-        NetworkManager.start(this)
+        
+        // Run network setup on a background thread to prevent ANR/crashes on older devices
+        Thread { NetworkManager.start(this) }.start()
+        
         registerNetworkCallback()
         Bus.status.value = "ONLINE"
     }
@@ -63,6 +65,7 @@ class TacticomService : Service() {
         }
         val notif = buildServiceNotification()
         val micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val types = if (micGranted) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
@@ -77,7 +80,7 @@ class TacticomService : Service() {
     }
 
     private fun registerNetworkCallback() {
-        val cm = getSystemService(ConnectivityManager::class.java)
+        val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val req = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
@@ -93,13 +96,13 @@ class TacticomService : Service() {
         if (now - lastRestart < 3000) return
         lastRestart = now
         NetworkManager.stop()
-        NetworkManager.start(this)
+        Thread { NetworkManager.start(this) }.start()
     }
 
     fun startRing(from: String) {
         if (player != null) return
         handler.post {
-            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+            wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tacticom:ring")
                 .apply { acquire(20_000) }
 
@@ -111,9 +114,12 @@ class TacticomService : Service() {
                 start()
             }
 
-            vibrator = getSystemService(Vibrator::class.java)
+            // Use the old API 1 way to get vibrator
+            vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 800, 400), 0))
+                // Call the quarantine wrapper so Android 7 never sees VibrationEffect
+                Compat.vibrate(vibrator)
             } else {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(longArrayOf(0, 800, 400), 0)
@@ -131,7 +137,8 @@ class TacticomService : Service() {
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .build()
-            getSystemService(NotificationManager::class.java).notify(2, notif)
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(2, notif)
             handler.postDelayed({ stopRing() }, 15_000)
         }
     }
@@ -141,7 +148,8 @@ class TacticomService : Service() {
         runCatching { player?.stop(); player?.release() }
         player = null
         runCatching { vibrator?.cancel() }
-        getSystemService(NotificationManager::class.java).cancel(2)
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.cancel(2)
         runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
     }
 
