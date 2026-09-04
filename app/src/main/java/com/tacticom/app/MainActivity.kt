@@ -29,11 +29,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Call
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -84,7 +84,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Root() {
     var tab by remember { mutableStateOf(0) }
-    val items = listOf("Devices" to Icons.Default.Home, "Intercom" to Icons.Default.Mic, "Settings" to Icons.Default.Person)
+    val items = listOf(
+        "Devices" to Icons.Default.Home,
+        "Intercom" to Icons.Default.Mic,
+        "Settings" to Icons.Default.Person
+    )
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("TACTICOM", color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.ExtraBold) }) },
@@ -100,7 +104,7 @@ fun Root() {
             when (tab) {
                 0 -> DevicesScreen()
                 1 -> IntercomScreen()
-                2 -> SettingsScreen()
+                else -> SettingsScreen()
             }
         }
     }
@@ -123,16 +127,25 @@ fun DevicesScreen() {
             }
         }
 
+        // Replaced Card with Box to avoid Material3 compiler signature bugs
         if (isInCall && activeCall != null) {
-            Card(Modifier.fillMaxWidth().clickable { }, containerColor = MaterialTheme.colorScheme.secondary) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("IN CALL WITH ${activeCall!!.name.uppercase()}", color = MaterialTheme.colorScheme.onSecondary, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(MaterialTheme.shapes.medium)
+                    .background(MaterialTheme.colorScheme.secondary)
+                    .padding(16.dp)
+            ) {
+                Text(
+                    "IN CALL WITH ${activeCall!!.name.uppercase()} — OPEN INTERCOM TAB", 
+                    color = MaterialTheme.colorScheme.onSecondary, 
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 
         Text("DEVICES ON NETWORK", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        if (peers.isEmpty()) Text("Searching for devices...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (peers.isEmpty()) Text("Searching for devices on your Wi‑Fi…", color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         peers.forEach { p ->
             Card(Modifier.fillMaxWidth()) {
@@ -164,7 +177,7 @@ fun IntercomScreen() {
 
     if (!isInCall || activeCall == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No active call.\nGo to Devices to call someone.", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyLarge)
+            Text("No active call.\nGo to the Devices tab and tap CALL.", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.bodyLarge)
         }
         return
     }
@@ -199,7 +212,12 @@ fun IntercomScreen() {
             },
             contentAlignment = Alignment.Center
         ) {
-            Text(if (transmitting) "TALKING" else if (live) "LIVE" else "HOLD\nTO TALK", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.headlineMedium)
+            Text(
+                if (transmitting) "TALKING" else if (live) "LIVE" else "HOLD\nTO TALK",
+                color = MaterialTheme.colorScheme.onPrimary,
+                fontWeight = FontWeight.ExtraBold,
+                style = MaterialTheme.typography.headlineMedium
+            )
         }
 
         Spacer(Modifier.height(16.dp))
@@ -252,6 +270,8 @@ fun SettingsScreen() {
         }
 
         Text("RINGTONE", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedButton(onClick = { ringtonePicker.launch("audio/*") }) { Text(if (active.ringtone != null) "CHANGE RINGTONE" else "CHOOSE RINGTONE") }
+        OutlinedButton(onClick = { ringtonePicker.launch("audio/*") }) {
+            Text(if (active.ringtone != null) "CHANGE RINGTONE" else "CHOOSE RINGTONE")
+        }
     }
 }
