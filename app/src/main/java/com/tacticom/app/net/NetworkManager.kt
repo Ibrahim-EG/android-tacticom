@@ -80,12 +80,17 @@ object NetworkManager {
                     val s = serverSocket?.accept() ?: break
                     s.tcpNoDelay = true
                     Log.d(TAG, "Incoming connection from ${s.inetAddress.hostAddress}")
-                    if (activeSocket != null && !activeSocket!!.isClosed) s.close()
-                    else {
-                        activeSocket = s
-                        sendHello()
-                        thread(name = "tcp-reader") { readLoop(s) }
-                    }
+                    
+                    // Don't close existing connection, just accept the new one
+                    activeSocket = s
+                    
+                    // Notify user that someone connected
+                    val peerIp = s.inetAddress.hostAddress ?: ""
+                    val peer = peers.values.firstOrNull { it.ip == peerIp }
+                    com.tacticom.app.Controller.onIncomingConnection(peer?.name ?: "Unknown device")
+                    
+                    sendHello()
+                    thread(name = "tcp-reader") { readLoop(s) }
                 }
             } catch (e: Exception) { Log.e(TAG, "Server error", e) }
         }
@@ -94,8 +99,12 @@ object NetworkManager {
     fun connectToPeer(peer: Peer) {
         thread(name = "tcp-client") {
             try {
-                runCatching { activeSocket?.close() }
-                activeSocket = null
+                // Only disconnect if we're already connected
+                if (activeSocket != null && !activeSocket!!.isClosed) {
+                    runCatching { activeSocket?.close() }
+                    activeSocket = null
+                }
+                
                 Log.d(TAG, "Connecting to ${peer.ip}:$TCP_PORT")
                 val s = Socket()
                 s.connect(InetSocketAddress(peer.ip, TCP_PORT), 3000)
@@ -127,6 +136,7 @@ object NetworkManager {
                 val body = readExact(ins, len) ?: break
                 if (body[0].toInt() == 0) handleJson(JSONObject(String(body, 1, len - 1)))
                 else {
+                    // Audio - feed to playback
                     com.tacticom.app.Controller.audio?.feed(body.copyOfRange(1, len))
                 }
             }
