@@ -12,45 +12,50 @@ object Controller {
     fun startService(c: Context) {
         appContext = c.applicationContext
         val i = Intent(c, TacticomService::class.java)
-        try { Context::class.java.getMethod("startForegroundService", Intent::class.java).invoke(c, i) } 
+        try { Context::class.java.getMethod("startForegroundService", Intent::class.java).invoke(c, i) }
         catch (e: Exception) { c.startService(i) }
     }
 
     fun initAudio() {
         val ctx = appContext ?: return
-        if (audio == null) audio = AudioEngine(ctx).apply { 
+        if (audio == null) audio = AudioEngine(ctx).apply {
             onChunk = { chunk ->
                 Bus.currentSession.value?.let { session ->
                     NetworkManager.broadcastAudio(session.id, null, chunk)
                 }
-            } 
+            }
         }
+    }
+
+    fun createSession(name: String, password: String?) {
+        val finalName = if (name.isBlank()) "Session" else name
+        NetworkManager.createSession(finalName, password)
+        Bus.toastMsg.value = "Session \"$finalName\" created"
     }
 
     fun callPeer(peer: Peer) {
         val sessionId = NetworkManager.createSession("Call with ${peer.name}", null)
-        val session = Session(sessionId, "Call with ${peer.name}", Store.myId, Store.activeName(), NetworkManager.getLocalIPv4(), NetworkManager.TCP_PORT, false, 1)
-        Bus.currentSession.value = session
-        Bus.sessions.value = Bus.sessions.value + session
-        Bus.sessionMembers.value = listOf(Store.activeName())
-        
-        NetworkManager.sendRing(peer.ip, peer.port, sessionId, session.name, false)
-        initAudio()
-        audio?.startCapture()
-        audio?.startPlayback()
+        NetworkManager.sendRing(peer.ip, peer.port, sessionId, "Call with ${peer.name}", false)
+        Bus.toastMsg.value = "Ringing ${peer.name}..."
     }
 
     fun onIncomingRing(from: String, sessionId: String, sessionName: String, hostIp: String, hostPort: Int, locked: Boolean) {
         TacticomService.instance?.startRing(from, 45000)
-        val session = Session(sessionId, sessionName, from, from, hostIp, hostPort, locked, 1)
         if (Bus.sessions.value.none { it.id == sessionId }) {
-            Bus.sessions.value = Bus.sessions.value + session
+            Bus.sessions.value = Bus.sessions.value + Session(sessionId, sessionName, from, from, hostIp, hostPort, locked, 0)
         }
     }
 
-    fun joinSession(session: Session, password: String?) {
-        Bus.currentSession.value = session
-        NetworkManager.joinSession(session.id, session.hostIp, session.hostPort, password)
+    fun enterSession(session: Session, password: String?) {
+        if (session.hostId == Store.myId) {
+            NetworkManager.enterHostedSession(session.id)
+            Bus.currentSession.value = session
+            Bus.sessionMembers.value = listOf(Store.activeName())
+            startAudio()
+        } else {
+            Bus.currentSession.value = session
+            NetworkManager.joinSession(session.id, session.hostIp, session.hostPort, password)
+        }
     }
 
     fun onJoinSuccess(sessionId: String) {
@@ -65,9 +70,15 @@ object Controller {
     }
 
     fun leaveSession() {
-        Bus.currentSession.value?.let { session ->
+        val session = Bus.currentSession.value ?: return
+        if (session.hostId == Store.myId) {
+            NetworkManager.leaveHostedSession(session.id)
+        } else {
             NetworkManager.leaveSession(session.id)
         }
+        Bus.currentSession.value = null
+        Bus.sessionMembers.value = emptyList()
+        stopAudio()
     }
 
     fun startTransmit() {
@@ -80,8 +91,8 @@ object Controller {
         audio?.transmitting = false
     }
 
-    fun stopAudio() { 
+    fun stopAudio() {
         audio?.stopCapture()
-        audio?.stopPlayback() 
+        audio?.stopPlayback()
     }
 }
