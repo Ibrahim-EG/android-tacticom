@@ -11,5 +11,4 @@ object Bus {
     val isTransmitting = MutableStateFlow(false)
     val vu = MutableStateFlow(0f)
     val toastMsg = MutableStateFlow("")
-    val earpiece = MutableStateFlow(false)
 }
