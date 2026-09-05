@@ -16,10 +16,9 @@ import kotlin.concurrent.thread
 class AudioEngine(private val ctx: Context) {
     companion object {
         const val RATE = 48000
-        const val CHUNK = RATE * 10 / 1000 * 2 // 960 bytes
+        const val CHUNK = RATE * 10 / 1000 * 2
     }
 
-    @Volatile var transmitting = false
     @Volatile var earpiece = false
     @Volatile var onChunk: ((ByteArray) -> Unit)? = null
 
@@ -37,13 +36,10 @@ class AudioEngine(private val ctx: Context) {
         capturing = true
         thread(name = "audio-capture") {
             try {
-                val min = AudioRecord.getMinBufferSize(
-                    RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
-                )
+                val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
                 val rec = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION, RATE,
-                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                    maxOf(min, CHUNK * 4)
+                    MediaRecorder.AudioSource.MIC, RATE, // Fixed: Standard MIC instead of VOICE_COMMUNICATION
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, CHUNK * 4)
                 )
                 record = rec
                 rec.startRecording()
@@ -57,13 +53,11 @@ class AudioEngine(private val ctx: Context) {
                         sum += v * v
                     }
                     Bus.vu.value = sqrt(sum / (read / 2)).toFloat()
-                    if (transmitting) onChunk?.invoke(buf.copyOf(read))
+                    onChunk?.invoke(buf.copyOf(read)) // Fixed: Always send audio when connected
                 }
                 runCatching { rec.stop(); rec.release() }
                 record = null
-            } catch (_: Exception) {
-                Bus.toastMsg.value = "Microphone unavailable — check permission."
-            }
+            } catch (_: Exception) { Bus.toastMsg.value = "Mic error" }
         }
     }
 
@@ -74,15 +68,10 @@ class AudioEngine(private val ctx: Context) {
         playing = true
         applyRouting()
         thread(name = "audio-play") {
-            val min = AudioTrack.getMinBufferSize(
-                RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
-            )
+            val min = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val stream = if (earpiece) AudioManager.STREAM_VOICE_CALL else AudioManager.STREAM_MUSIC
             @Suppress("DEPRECATION")
-            val tr = AudioTrack(
-                stream, RATE, AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT, maxOf(min, CHUNK * 8), AudioTrack.MODE_STREAM
-            )
+            val tr = AudioTrack(stream, RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, CHUNK * 8), AudioTrack.MODE_STREAM)
             track = tr
             tr.play()
             while (playing) {
@@ -94,10 +83,7 @@ class AudioEngine(private val ctx: Context) {
         }
     }
 
-    fun stopPlayback() {
-        playing = false
-        queue.clear()
-    }
+    fun stopPlayback() { playing = false; queue.clear() }
 
     fun feed(data: ByteArray) {
         if (queue.remainingCapacity() == 0) queue.poll()
