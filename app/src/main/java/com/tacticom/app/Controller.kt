@@ -2,6 +2,7 @@ package com.tacticom.app
 
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import android.util.Log
 import com.tacticom.app.audio.AudioEngine
 import com.tacticom.app.net.NetworkManager
@@ -10,6 +11,8 @@ object Controller {
     private const val TAG = "Controller"
     @Volatile var audio: AudioEngine? = null
     @Volatile var appContext: Context? = null
+    private var proxLock: PowerManager.WakeLock? = null
+    private var connectedAt: Long = 0
 
     fun startService(c: Context) {
         appContext = c.applicationContext
@@ -40,9 +43,11 @@ object Controller {
 
     fun acceptCall() {
         Bus.callState.value = CallState.CONNECTED
+        connectedAt = System.currentTimeMillis()
         NetworkManager.sendCallAccept()
         startAudio()
         stopRinging()
+        enableProximity()
     }
 
     fun declineCall() {
@@ -51,6 +56,11 @@ object Controller {
     }
 
     fun hangUp() { 
+        // DEBOUNCE: Prevent accidental hangup if user's finger lifts onto the End button
+        if (System.currentTimeMillis() - connectedAt < 1500) {
+             Log.d(TAG, "Hangup ignored (debounce)")
+             return
+        }
         NetworkManager.sendCallDecline()
         handleDisconnect() 
     }
@@ -58,10 +68,15 @@ object Controller {
     fun handleDisconnect() {
         stopRinging()
         stopAudio()
+        disableProximity()
         NetworkManager.disconnect()
     }
 
-    fun startAudio() { initAudio(); audio?.startCapture(); audio?.startPlayback() }
+    fun startAudio() { 
+        initAudio()
+        runCatching { audio?.startCapture() }
+        runCatching { audio?.startPlayback() }
+    }
     fun stopAudio() { audio?.stopCapture(); audio?.stopPlayback() }
 
     fun startRinging(name: String) { TacticomService.instance?.startRing(name, 45000) }
@@ -70,5 +85,19 @@ object Controller {
     fun setEarpiece(on: Boolean) {
         audio?.earpiece = on; audio?.applyRouting()
         if (Bus.callState.value == CallState.CONNECTED) { audio?.stopPlayback(); audio?.startPlayback() }
+    }
+
+    private fun enableProximity() {
+        val ctx = appContext ?: return
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        // PROXIMITY_SCREEN_WAKE_LOCK flag turns screen off when sensor is covered
+        if (proxLock == null) {
+            proxLock = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_WAKE_LOCK, "tacticom:prox")
+        }
+        if (proxLock?.isHeld == false) proxLock?.acquire()
+    }
+
+    private fun disableProximity() {
+        runCatching { proxLock?.let { if (it.isHeld) it.release() } }
     }
 }
