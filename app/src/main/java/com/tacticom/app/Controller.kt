@@ -12,7 +12,6 @@ object Controller {
     @Volatile var audio: AudioEngine? = null
     @Volatile var appContext: Context? = null
     private var proxLock: PowerManager.WakeLock? = null
-    private var connectedAt: Long = 0
 
     fun startService(c: Context) {
         appContext = c.applicationContext
@@ -26,70 +25,57 @@ object Controller {
         if (audio == null) audio = AudioEngine(ctx).apply { onChunk = { NetworkManager.sendAudio(it) } }
     }
 
-    fun callPeer(peer: Peer) {
-        Bus.activeCallPeer.value = peer
-        Bus.callState.value = CallState.CALLING
-        NetworkManager.connectToPeer(peer, 
-            onConnected = { 
-                Log.d(TAG, "Socket open, sending call request")
-                NetworkManager.sendCallRequest() 
-            }, 
-            onFailed = { 
-                Bus.toastMsg.value = "Failed to call"
-                Bus.callState.value = CallState.IDLE
-            }
-        )
-    }
-
-    fun acceptCall() {
-        Bus.callState.value = CallState.CONNECTED
-        connectedAt = System.currentTimeMillis()
-        NetworkManager.sendCallAccept()
-        startAudio()
-        stopRinging()
+    fun connectToPeer(peer: Peer) {
+        initAudio()
+        NetworkManager.connectToPeer(peer)
+        // Only start PLAYBACK on connection, not capture
+        // Capture only starts when PTT is pressed
+        audio?.startPlayback()
         enableProximity()
     }
 
-    fun declineCall() {
-        NetworkManager.sendCallDecline()
-        handleDisconnect()
-    }
-
-    fun hangUp() { 
-        if (System.currentTimeMillis() - connectedAt < 1500) {
-             Log.d(TAG, "Hangup ignored (debounce)")
-             return
-        }
-        NetworkManager.sendCallDecline()
-        handleDisconnect() 
-    }
-
-    fun handleDisconnect() {
-        stopRinging()
+    fun disconnect() {
         stopAudio()
         disableProximity()
         NetworkManager.disconnect()
     }
 
+    // Start capturing only when PTT is pressed
+    fun startTransmit() {
+        Bus.isTransmitting.value = true
+        audio?.transmitting = true
+        audio?.startCapture() // Start mic now
+    }
+
+    // Stop capturing when PTT is released
+    fun stopTransmit() {
+        Bus.isTransmitting.value = false
+        audio?.transmitting = false
+        audio?.stopCapture() // Stop mic now
+    }
+
     fun startAudio() { 
         initAudio()
-        runCatching { audio?.startCapture() }
-        runCatching { audio?.startPlayback() }
+        audio?.startPlayback()
     }
-    fun stopAudio() { audio?.stopCapture(); audio?.stopPlayback() }
-
-    fun startRinging(name: String) { TacticomService.instance?.startRing(name, 45000) }
-    fun stopRinging() { TacticomService.instance?.stopRing() }
+    
+    fun stopAudio() { 
+        audio?.stopCapture()
+        audio?.stopPlayback() 
+    }
 
     fun setEarpiece(on: Boolean) {
-        audio?.earpiece = on; audio?.applyRouting()
-        if (Bus.callState.value == CallState.CONNECTED) { audio?.stopPlayback(); audio?.startPlayback() }
+        audio?.earpiece = on
+        audio?.applyRouting()
+        if (Bus.connectedPeer.value != null) {
+            audio?.stopPlayback()
+            audio?.startPlayback()
+        }
     }
 
     private fun enableProximity() {
         val ctx = appContext ?: return
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-        // 32 is the hidden integer value for PROXIMITY_SCREEN_OFF_WAKE_LOCK
         if (proxLock == null) {
             proxLock = pm.newWakeLock(32, "tacticom:prox")
         }
