@@ -5,6 +5,7 @@ import android.content.Intent
 import com.tacticom.app.audio.AudioEngine
 import com.tacticom.app.net.NetworkManager
 import org.json.JSONObject
+import kotlin.concurrent.thread
 
 object Controller {
     @Volatile var audio: AudioEngine? = null
@@ -25,9 +26,7 @@ object Controller {
     fun openChat(peer: Peer) {
         Bus.currentChatPeer.value = peer
         Bus.chatMessages.value = Store.getChatHistory(peer.id)
-        if (Bus.connectedPeer.value?.id != peer.id) {
-            NetworkManager.connectToPeer(peer)
-        }
+        thread { NetworkManager.ensureConnected(peer) }
     }
 
     fun sendChat(text: String) {
@@ -42,8 +41,14 @@ object Controller {
     fun callPeer(peer: Peer) {
         Bus.activeCallPeer.value = peer
         Bus.callState.value = CallState.CALLING
-        if (Bus.connectedPeer.value?.id != peer.id) NetworkManager.connectToPeer(peer)
-        NetworkManager.sendJson(JSONObject().put("type", "incoming_call").put("from", Store.activeName()).toString().toByteArray())
+        thread {
+            val s = NetworkManager.ensureConnected(peer)
+            if (s != null) {
+                NetworkManager.sendJson(JSONObject().put("type", "incoming_call").put("from", Store.activeName()).toString().toByteArray())
+            } else {
+                Bus.callState.value = CallState.IDLE
+            }
+        }
     }
 
     fun acceptCall() {
@@ -58,7 +63,10 @@ object Controller {
         handleDisconnect()
     }
 
-    fun hangUp() { handleDisconnect() }
+    fun hangUp() { 
+        NetworkManager.sendJson(JSONObject().put("type", "call_declined").toString().toByteArray())
+        handleDisconnect() 
+    }
 
     fun handleDisconnect() {
         stopRinging()
