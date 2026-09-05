@@ -2,12 +2,12 @@ package com.tacticom.app
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import com.tacticom.app.audio.AudioEngine
 import com.tacticom.app.net.NetworkManager
-import org.json.JSONObject
-import kotlin.concurrent.thread
 
 object Controller {
+    private const val TAG = "Controller"
     @Volatile var audio: AudioEngine? = null
     @Volatile var appContext: Context? = null
 
@@ -26,7 +26,9 @@ object Controller {
     fun openChat(peer: Peer) {
         Bus.currentChatPeer.value = peer
         Bus.chatMessages.value = Store.getChatHistory(peer.id)
-        thread { NetworkManager.ensureConnected(peer) }
+        if (NetworkManager.activeSocket == null || NetworkManager.activeSocket?.isClosed == true) {
+            NetworkManager.connectToPeer(peer, onConnected = {}, onFailed = { Bus.toastMsg.value = "Failed to connect" })
+        }
     }
 
     fun sendChat(text: String) {
@@ -41,30 +43,32 @@ object Controller {
     fun callPeer(peer: Peer) {
         Bus.activeCallPeer.value = peer
         Bus.callState.value = CallState.CALLING
-        thread {
-            val s = NetworkManager.ensureConnected(peer)
-            if (s != null) {
-                NetworkManager.sendJson(JSONObject().put("type", "incoming_call").put("from", Store.activeName()).toString().toByteArray())
-            } else {
+        NetworkManager.connectToPeer(peer, 
+            onConnected = { 
+                Log.d(TAG, "Socket open, sending call request")
+                NetworkManager.sendCallRequest() 
+            }, 
+            onFailed = { 
+                Bus.toastMsg.value = "Failed to call"
                 Bus.callState.value = CallState.IDLE
             }
-        }
+        )
     }
 
     fun acceptCall() {
         Bus.callState.value = CallState.CONNECTED
-        NetworkManager.sendJson(JSONObject().put("type", "call_accepted").toString().toByteArray())
+        NetworkManager.sendCallAccept()
         startAudio()
         stopRinging()
     }
 
     fun declineCall() {
-        NetworkManager.sendJson(JSONObject().put("type", "call_declined").toString().toByteArray())
+        NetworkManager.sendCallDecline()
         handleDisconnect()
     }
 
     fun hangUp() { 
-        NetworkManager.sendJson(JSONObject().put("type", "call_declined").toString().toByteArray())
+        NetworkManager.sendCallDecline()
         handleDisconnect() 
     }
 
