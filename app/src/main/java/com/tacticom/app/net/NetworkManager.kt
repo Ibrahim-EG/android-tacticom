@@ -12,9 +12,11 @@ import java.io.InputStream
 import java.net.DatagramPacket
 import java.net.InetAddress
 import java.net.MulticastSocket
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.ByteBuffer
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
@@ -26,7 +28,23 @@ object NetworkManager {
     private var mcastSocket: MulticastSocket? = null
     private var mcastLock: WifiManager.MulticastLock? = null
     @Volatile var running = false
-    private var writeLock = Any()
+    private val writeLock = Any()
+    private val connectLock = Any()
+
+    fun getLocalIPv4(): String {
+        try {
+            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            for (intf in interfaces) {
+                val addrs = Collections.list(intf.inetAddresses)
+                for (addr in addrs) {
+                    if (!addr.isLoopbackAddress && addr.hostAddress?.indexOf(':') == -1) {
+                        return addr.hostAddress!!
+                    }
+                }
+            }
+        } catch (e: Exception) {}
+        return "127.0.0.1"
+    }
 
     fun start(ctx: Context) {
         running = true
@@ -49,29 +67,42 @@ object NetworkManager {
                 try {
                     val s = serverSocket?.accept() ?: break
                     s.tcpNoDelay = true
-                    activeSocket = s
-                    sendJson(JSONObject().put("type", "hello").put("id", Store.myId).put("name", Store.activeName()).toString().toByteArray())
-                    thread(name = "server-reader") { readLoop(s) }
+                    s.soTimeout = 0
+                    
+                    synchronized(connectLock) {
+                        if (activeSocket != null && !activeSocket!!.isClosed) {
+                            s.close() // Drop if already on a call
+                        } else {
+                            activeSocket = s
+                            val hello = JSONObject().put("type", "hello").put("id", Store.myId).put("name", Store.activeName()).toString().toByteArray()
+                            writeFrame(0, hello, s)
+                            thread(name = "server-reader") { readLoop(s) }
+                        }
+                    }
                 } catch (_: Exception) {}
             }
         }
     }
 
-    fun connectToPeer(peer: Peer) {
-        if (activeSocket != null && Bus.connectedPeer.value?.id == peer.id) return
-        if (activeSocket != null) disconnect()
-        
-        thread(name = "client-connect") {
+    fun ensureConnected(peer: Peer): Socket? {
+        synchronized(connectLock) {
+            if (activeSocket != null && !activeSocket!!.isClosed && Bus.connectedPeer.value?.id == peer.id) {
+                return activeSocket
+            }
+            disconnectInternal()
             try {
                 val s = Socket(peer.ip, peer.port)
                 s.tcpNoDelay = true
+                s.soTimeout = 0
                 activeSocket = s
                 Bus.connectedPeer.value = peer
-                sendJson(JSONObject().put("type", "hello").put("id", Store.myId).put("name", Store.activeName()).toString().toByteArray())
-                readLoop(s)
-            } catch (_: Exception) {
-                Bus.toastMsg.value = "Failed to connect"
-                com.tacticom.app.Controller.handleDisconnect()
+                val hello = JSONObject().put("type", "hello").put("id", Store.myId).put("name", Store.activeName()).toString().toByteArray()
+                writeFrame(0, hello, s)
+                thread(name = "client-reader") { readLoop(s) }
+                return s
+            } catch (e: Exception) {
+                Bus.toastMsg.value = "Failed to connect to ${peer.name}"
+                return null
             }
         }
     }
@@ -79,7 +110,7 @@ object NetworkManager {
     private fun readLoop(s: Socket) {
         try {
             val ins = s.getInputStream()
-            while (running) {
+            while (running && !s.isClosed) {
                 val lenBytes = readExact(ins, 4) ?: break
                 val len = ByteBuffer.wrap(lenBytes).int
                 if (len <= 0 || len > 2_000_000) break
@@ -101,8 +132,7 @@ object NetworkManager {
             "hello" -> {
                 val id = json.optString("id")
                 val name = json.optString("name")
-                val ip = activeSocket?.inetAddress?.hostAddress ?: ""
-                val peer = peers.values.firstOrNull { it.id == id } ?: Peer(id, name, ip, 0, false)
+                val peer = peers.values.firstOrNull { it.id == id } ?: Peer(id, name, "", 0, false)
                 Bus.connectedPeer.value = peer
             }
             "chat" -> {
@@ -132,6 +162,7 @@ object NetworkManager {
                 com.tacticom.app.Controller.startAudio()
             }
             "call_declined" -> com.tacticom.app.Controller.handleDisconnect()
+            "ring" -> com.tacticom.app.Controller.ringLocal(json.optString("from", "Someone")) // FIXED!
         }
     }
 
@@ -141,8 +172,8 @@ object NetworkManager {
         return buf
     }
 
-    private fun writeFrame(type: Byte, data: ByteArray) {
-        val s = activeSocket ?: return
+    private fun writeFrame(type: Byte, data: ByteArray, s: Socket? = activeSocket) {
+        if (s == null || s.isClosed) return
         synchronized(writeLock) {
             runCatching {
                 val out = s.getOutputStream()
@@ -163,6 +194,10 @@ object NetworkManager {
     }
 
     fun disconnect() {
+        synchronized(connectLock) { disconnectInternal() }
+    }
+    
+    private fun disconnectInternal() {
         runCatching { activeSocket?.close() }
         activeSocket = null
         Bus.connectedPeer.value = null
@@ -172,15 +207,10 @@ object NetworkManager {
 
     fun ringPeer(peer: Peer) {
         thread {
-            runCatching {
-                val s = Socket(peer.ip, peer.port)
-                s.tcpNoDelay = true
+            val s = ensureConnected(peer)
+            if (s != null) {
                 val json = JSONObject().put("type", "ring").put("from", Store.activeName()).toString().toByteArray()
-                val payload = ByteArray(json.size + 1); payload[0] = 0
-                System.arraycopy(json, 0, payload, 1, json.size)
-                val out = s.getOutputStream()
-                out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
-                out.write(payload); out.flush(); s.close()
+                sendJson(json)
             }
         }
     }
@@ -198,7 +228,9 @@ object NetworkManager {
                     runCatching {
                         val json = JSONObject(String(pkt.data, 0, pkt.length)); val id = json.optString("id")
                         if (id.isNotEmpty() && id != Store.myId) {
-                            peers[id] = Peer(id, json.optString("name", "?"), pkt.address.hostAddress ?: "", json.optInt("port", 0), false)
+                            // Force IPv4
+                            val ip = json.optString("ip", pkt.address.hostAddress ?: "")
+                            peers[id] = Peer(id, json.optString("name", "?"), ip, json.optInt("port", 0), false)
                             lastSeen[id] = System.currentTimeMillis(); Bus.peers.value = peers.values.sortedBy { it.name }
                         }
                     }
@@ -210,7 +242,11 @@ object NetworkManager {
                 runCatching {
                     val s = mcastSocket
                     if (s != null) {
-                        val json = JSONObject().put("id", Store.myId).put("name", Store.activeName()).put("port", serverSocket?.localPort ?: 0)
+                        val json = JSONObject()
+                            .put("id", Store.myId)
+                            .put("name", Store.activeName())
+                            .put("port", serverSocket?.localPort ?: 0)
+                            .put("ip", getLocalIPv4()) // Broadcast actual IPv4
                         val payload = json.toString().toByteArray()
                         s.send(DatagramPacket(payload, payload.size, InetAddress.getByName("239.255.255.250"), 50505))
                     }
