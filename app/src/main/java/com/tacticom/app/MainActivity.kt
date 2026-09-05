@@ -157,7 +157,8 @@ fun ChatScreen(onBack: () -> Unit) {
 @Composable
 fun ChatBubble(msg: ChatMessage) {
     val isSent = msg.isSent
-    val alignment = if (isSent) Alignment.CenterEnd else Alignment.CenterStart
+    // FIX: Use 1D horizontal alignment (End/Start) instead of 2D (CenterEnd/CenterStart)
+    val alignment = if (isSent) Alignment.End else Alignment.Start
     val bgColor = if (isSent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (isSent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
 
