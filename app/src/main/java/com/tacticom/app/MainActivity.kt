@@ -2,7 +2,6 @@
 package com.tacticom.app
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -12,7 +11,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -32,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
@@ -93,6 +92,9 @@ fun Root() {
     var screen by remember { mutableStateOf("lobby") }
     var pendingSession by remember { mutableStateOf<Session?>(null) }
     var passInput by remember { mutableStateOf("") }
+    var showCreate by remember { mutableStateOf(false) }
+    var createName by remember { mutableStateOf("") }
+    var createPass by remember { mutableStateOf("") }
     val currentSession by Bus.currentSession.collectAsState()
 
     LaunchedEffect(currentSession) {
@@ -105,9 +107,11 @@ fun Root() {
             "lobby" -> LobbyScreen(
                 onPeerClick = { peer -> Controller.callPeer(peer) },
                 onSessionClick = { session ->
-                    if (session.locked) { pendingSession = session; passInput = "" } 
-                    else Controller.joinSession(session, null)
+                    if (session.hostId == Store.myId) Controller.enterSession(session, null)
+                    else if (session.locked) { pendingSession = session; passInput = "" }
+                    else Controller.enterSession(session, null)
                 },
+                onCreateClick = { showCreate = true },
                 onSettingsClick = { screen = "settings" }
             )
             "session" -> SessionScreen(onLeave = { Controller.leaveSession() })
@@ -119,18 +123,32 @@ fun Root() {
                 onDismissRequest = { pendingSession = null },
                 title = { Text("Password Required") },
                 text = {
-                    OutlinedTextField(
-                        value = passInput, onValueChange = { passInput = it },
-                        label = { Text("Enter Password") }, modifier = Modifier.fillMaxWidth()
-                    )
+                    OutlinedTextField(value = passInput, onValueChange = { passInput = it }, label = { Text("Enter Password") }, modifier = Modifier.fillMaxWidth())
+                },
+                confirmButton = {
+                    Button(onClick = { pendingSession?.let { Controller.enterSession(it, passInput) }; pendingSession = null }) { Text("JOIN") }
+                },
+                dismissButton = { TextButton(onClick = { pendingSession = null }) { Text("CANCEL") } }
+            )
+        }
+
+        if (showCreate) {
+            AlertDialog(
+                onDismissRequest = { showCreate = false },
+                title = { Text("Create Session") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(value = createName, onValueChange = { createName = it }, label = { Text("Session name (optional)") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = createPass, onValueChange = { createPass = it }, label = { Text("Password (optional)") }, modifier = Modifier.fillMaxWidth())
+                    }
                 },
                 confirmButton = {
                     Button(onClick = {
-                        pendingSession?.let { Controller.joinSession(it, passInput) }
-                        pendingSession = null
-                    }) { Text("JOIN") }
+                        Controller.createSession(createName, createPass.ifBlank { null })
+                        createName = ""; createPass = ""; showCreate = false
+                    }) { Text("CREATE") }
                 },
-                dismissButton = { TextButton(onClick = { pendingSession = null }) { Text("CANCEL") } }
+                dismissButton = { TextButton(onClick = { showCreate = false }) { Text("CANCEL") } }
             )
         }
     }
@@ -138,7 +156,7 @@ fun Root() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LobbyScreen(onPeerClick: (Peer) -> Unit, onSessionClick: (Session) -> Unit, onSettingsClick: () -> Unit) {
+fun LobbyScreen(onPeerClick: (Peer) -> Unit, onSessionClick: (Session) -> Unit, onCreateClick: () -> Unit, onSettingsClick: () -> Unit) {
     val peers by Bus.peers.collectAsState()
     val sessions by Bus.sessions.collectAsState()
     val toast by Bus.toastMsg.collectAsState()
@@ -166,6 +184,12 @@ fun LobbyScreen(onPeerClick: (Peer) -> Unit, onSessionClick: (Session) -> Unit, 
                         Text(Store.activeName(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
+            }
+
+            Button(onClick = onCreateClick, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("CREATE SESSION")
             }
 
             Text("DEVICES ON NETWORK", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -200,7 +224,7 @@ fun LobbyScreen(onPeerClick: (Peer) -> Unit, onSessionClick: (Session) -> Unit, 
                                 Text(session.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSecondaryContainer)
                                 Text("Host: ${session.hostName} • ${session.memberCount} inside", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f))
                             }
-                            Text("JOIN", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+                            Text(if (session.hostId == Store.myId) "ENTER" else "JOIN", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -216,7 +240,6 @@ fun SessionScreen(onLeave: () -> Unit) {
     val members by Bus.sessionMembers.collectAsState()
     val isTransmitting by Bus.isTransmitting.collectAsState()
     val vu by Bus.vu.collectAsState()
-
     val vuAnimated by animateFloatAsState(targetValue = vu, animationSpec = tween(durationMillis = 100), label = "vu")
 
     Column(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(colors = listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surfaceVariant)))) {
