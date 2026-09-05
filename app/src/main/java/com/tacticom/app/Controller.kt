@@ -28,8 +28,18 @@ object Controller {
     fun connectToPeer(peer: Peer) {
         initAudio()
         NetworkManager.connectToPeer(peer)
-        // Only start PLAYBACK on connection, not capture
-        // Capture only starts when PTT is pressed
+        audio?.startCapture()
+        audio?.startPlayback()
+        enableProximity()
+    }
+
+    fun onIncomingConnection(fromName: String) {
+        // Ring when someone connects to you
+        TacticomService.instance?.startRing(fromName, 15000)
+        
+        // Auto-start audio for the connection
+        initAudio()
+        audio?.startCapture()
         audio?.startPlayback()
         enableProximity()
     }
@@ -40,37 +50,25 @@ object Controller {
         NetworkManager.disconnect()
     }
 
-    // Start capturing only when PTT is pressed
     fun startTransmit() {
         Bus.isTransmitting.value = true
         audio?.transmitting = true
-        audio?.startCapture() // Start mic now
     }
 
-    // Stop capturing when PTT is released
     fun stopTransmit() {
         Bus.isTransmitting.value = false
         audio?.transmitting = false
-        audio?.stopCapture() // Stop mic now
     }
 
     fun startAudio() { 
         initAudio()
+        audio?.startCapture()
         audio?.startPlayback()
     }
     
     fun stopAudio() { 
         audio?.stopCapture()
         audio?.stopPlayback() 
-    }
-
-    fun setEarpiece(on: Boolean) {
-        audio?.earpiece = on
-        audio?.applyRouting()
-        if (Bus.connectedPeer.value != null) {
-            audio?.stopPlayback()
-            audio?.startPlayback()
-        }
     }
 
     private fun enableProximity() {
