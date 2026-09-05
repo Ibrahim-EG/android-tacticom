@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import com.tacticom.app.audio.AudioEngine
 import com.tacticom.app.net.NetworkManager
+import org.json.JSONObject
 
 object Controller {
     @Volatile var audio: AudioEngine? = null
@@ -12,51 +13,54 @@ object Controller {
     fun startService(c: Context) {
         appContext = c.applicationContext
         val i = Intent(c, TacticomService::class.java)
-        
-        // Reflection for startForegroundService (Android 8+)
-        try {
-            val method = Context::class.java.getMethod("startForegroundService", Intent::class.java)
-            method.invoke(c, i)
-        } catch (e: Exception) {
-            c.startService(i)
-        }
+        try { Context::class.java.getMethod("startForegroundService", Intent::class.java).invoke(c, i) } 
+        catch (e: Exception) { c.startService(i) }
     }
 
     fun initAudio() {
         val ctx = appContext ?: return
-        if (audio == null) {
-            audio = AudioEngine(ctx).apply { onChunk = { NetworkManager.sendAudio(it) } }
-        }
+        if (audio == null) audio = AudioEngine(ctx).apply { onChunk = { NetworkManager.sendAudio(it) } }
     }
 
     fun callPeer(peer: Peer) {
-        initAudio()
+        Bus.activePeer.value = peer
+        Bus.callState.value = CallState.CALLING
         NetworkManager.connectToPeer(peer)
-        audio?.startCapture()
-        audio?.startPlayback()
+        NetworkManager.sendJson(JSONObject().put("type", "incoming_call").put("from", Store.activeName()).toString().toByteArray())
     }
 
-    fun hangUp() { NetworkManager.disconnect() }
+    fun acceptCall() {
+        Bus.callState.value = CallState.CONNECTED
+        NetworkManager.sendJson(JSONObject().put("type", "call_accepted").toString().toByteArray())
+        startAudio()
+        stopRinging()
+    }
+
+    fun declineCall() {
+        NetworkManager.sendJson(JSONObject().put("type", "call_declined").toString().toByteArray())
+        handleDisconnect()
+    }
+
+    fun hangUp() { handleDisconnect() }
+
+    fun handleDisconnect() {
+        stopRinging()
+        stopAudio()
+        NetworkManager.disconnect()
+    }
+
+    fun startAudio() { initAudio(); audio?.startCapture(); audio?.startPlayback() }
+    fun stopAudio() { audio?.stopCapture(); audio?.stopPlayback() }
+
+    fun startRinging(name: String) { TacticomService.instance?.startRing(name, 45000) }
+    fun stopRinging() { TacticomService.instance?.stopRing() }
+
     fun ringPeer(peer: Peer) { NetworkManager.ringPeer(peer) }
-    fun ringLocal(from: String) { TacticomService.instance?.startRing(from) }
-
-    fun setTransmit(on: Boolean) {
-        Bus.transmitting.value = on
-        audio?.transmitting = on
-    }
-
-    fun setLive(on: Boolean) {
-        Bus.liveMode.value = on
-        setTransmit(on)
-    }
+    fun ringLocal(from: String) { TacticomService.instance?.startRing(from, 15000) } // Manual bell is 15s
 
     fun setEarpiece(on: Boolean) {
-        Bus.earpiece.value = on
-        audio?.earpiece = on
-        audio?.applyRouting()
-        if (Bus.isInCall.value) {
-            audio?.stopPlayback()
-            audio?.startPlayback()
-        }
+        Bus.earpiece.value = on // Note: earpiece flow removed from Bus to simplify, but kept here for future
+        audio?.earpiece = on; audio?.applyRouting()
+        if (Bus.callState.value == CallState.CONNECTED) { audio?.stopPlayback(); audio?.startPlayback() }
     }
 }
