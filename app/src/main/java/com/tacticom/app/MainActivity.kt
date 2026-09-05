@@ -290,7 +290,6 @@ fun PTTScreen(onBack: () -> Unit) {
     val connectedPeer by Bus.connectedPeer.collectAsState()
     val isTransmitting by Bus.isTransmitting.collectAsState()
     val vu by Bus.vu.collectAsState()
-    val earpiece by Bus.earpiece.collectAsState()
 
     val vuAnimated by animateFloatAsState(
         targetValue = vu,
@@ -422,28 +421,6 @@ fun PTTScreen(onBack: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.padding(bottom = 32.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Person,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        "Earpiece",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Switch(
-                        checked = earpiece,
-                        onCheckedChange = { Controller.setEarpiece(it) }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(40.dp))
-
                 Box(
                     modifier = Modifier
                         .size(200.dp)
