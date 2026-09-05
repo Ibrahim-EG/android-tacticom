@@ -50,7 +50,6 @@ object NetworkManager {
                     val s = serverSocket?.accept() ?: break
                     s.tcpNoDelay = true
                     activeSocket = s
-                    // Send hello immediately so the other side knows who connected
                     sendJson(JSONObject().put("type", "hello").put("id", Store.myId).put("name", Store.activeName()).toString().toByteArray())
                     thread(name = "server-reader") { readLoop(s) }
                 } catch (_: Exception) {}
@@ -169,6 +168,21 @@ object NetworkManager {
         Bus.connectedPeer.value = null
         Bus.callState.value = CallState.IDLE
         Bus.activeCallPeer.value = null
+    }
+
+    fun ringPeer(peer: Peer) {
+        thread {
+            runCatching {
+                val s = Socket(peer.ip, peer.port)
+                s.tcpNoDelay = true
+                val json = JSONObject().put("type", "ring").put("from", Store.activeName()).toString().toByteArray()
+                val payload = ByteArray(json.size + 1); payload[0] = 0
+                System.arraycopy(json, 0, payload, 1, json.size)
+                val out = s.getOutputStream()
+                out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
+                out.write(payload); out.flush(); s.close()
+            }
+        }
     }
 
     private fun startDiscovery(ctx: Context) {
