@@ -21,28 +21,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -83,28 +74,23 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Root() {
     var tab by remember { mutableStateOf(0) }
-    var inChat by remember { mutableStateOf(false) }
     var callMinimized by remember { mutableStateOf(false) }
     val callState by Bus.callState.collectAsState()
 
     LaunchedEffect(callState) { if (callState == CallState.IDLE) callMinimized = false }
 
     Box(Modifier.fillMaxSize()) {
-        if (inChat) {
-            ChatScreen(onBack = { inChat = false; Bus.currentChatPeer.value = null })
-        } else {
-            Scaffold(
-                topBar = { TopAppBar(title = { Text("TACTICOM", color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.ExtraBold) }) },
-                bottomBar = {
-                    NavigationBar {
-                        listOf("Devices" to Icons.Default.Home, "Settings" to Icons.Default.Person).forEachIndexed { i, p ->
-                            NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(p.second, null) }, label = { Text(p.first) })
-                        }
+        Scaffold(
+            topBar = { TopAppBar(title = { Text("TACTICOM", color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.ExtraBold) }) },
+            bottomBar = {
+                NavigationBar {
+                    listOf("Devices" to Icons.Default.Home, "Settings" to Icons.Default.Person).forEachIndexed { i, p ->
+                        NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(p.second, null) }, label = { Text(p.first) })
                     }
                 }
-            ) { pad ->
-                Box(Modifier.padding(pad)) { if (tab == 0) DevicesScreen(onChatClick = { inChat = true }) else SettingsScreen() }
             }
+        ) { pad ->
+            Box(Modifier.padding(pad)) { if (tab == 0) DevicesScreen() else SettingsScreen() }
         }
 
         if (callState != CallState.IDLE && !callMinimized) {
@@ -179,61 +165,7 @@ fun CallOverlay(onMinimize: () -> Unit) {
 }
 
 @Composable
-fun ChatScreen(onBack: () -> Unit) {
-    val peer by Bus.currentChatPeer.collectAsState()
-    val messages by Bus.chatMessages.collectAsState()
-    var input by remember { mutableStateOf("") }
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(peer?.name ?: "Chat", fontWeight = FontWeight.Bold) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
-            )
-        },
-        bottomBar = {
-            Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f),
-                    placeholder = { Text("Message...") }, maxLines = 3
-                )
-                Spacer(Modifier.size(8.dp))
-                IconButton(onClick = { Controller.sendChat(input); input = "" }, enabled = input.isNotBlank()) {
-                    Icon(Icons.Default.Send, "Send", tint = MaterialTheme.colorScheme.primary)
-                }
-            }
-        }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 8.dp),
-            state = listState, verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(messages) { msg -> ChatBubble(msg) }
-        }
-    }
-}
-
-@Composable
-fun ChatBubble(msg: ChatMessage) {
-    val isSent = msg.isSent
-    val alignment = if (isSent) Alignment.End else Alignment.Start
-    val bgColor = if (isSent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-    val textColor = if (isSent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalAlignment = alignment) {
-        Box(
-            modifier = Modifier.widthIn(max = 280.dp).clip(MaterialTheme.shapes.medium).background(bgColor).padding(12.dp)
-        ) { Text(msg.text, color = textColor) }
-    }
-}
-
-@Composable
-fun DevicesScreen(onChatClick: () -> Unit) {
+fun DevicesScreen() {
     val peers by Bus.peers.collectAsState()
     val callState by Bus.callState.collectAsState()
     val toast by Bus.toastMsg.collectAsState()
@@ -246,8 +178,6 @@ fun DevicesScreen(onChatClick: () -> Unit) {
             Card(Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) { Text(p.name, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold); Text(p.ip, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
-                    IconButton(onClick = { Controller.ringPeer(p) }) { Icon(Icons.Default.Notifications, "Ring", tint = MaterialTheme.colorScheme.onSurface) }
-                    IconButton(onClick = { Controller.openChat(p); onChatClick() }) { Icon(Icons.Default.Chat, "Chat", tint = MaterialTheme.colorScheme.primary) }
                     Button(onClick = { if (callState == CallState.IDLE) Controller.callPeer(p) }) { Icon(Icons.Default.Call, "Call"); Spacer(Modifier.size(8.dp)); Text("CALL") }
                 }
             }
