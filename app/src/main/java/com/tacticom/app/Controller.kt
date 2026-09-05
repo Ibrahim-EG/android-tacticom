@@ -56,7 +56,6 @@ object Controller {
     }
 
     fun hangUp() { 
-        // DEBOUNCE: Prevent accidental hangup if user's finger lifts onto the End button
         if (System.currentTimeMillis() - connectedAt < 1500) {
              Log.d(TAG, "Hangup ignored (debounce)")
              return
@@ -90,9 +89,9 @@ object Controller {
     private fun enableProximity() {
         val ctx = appContext ?: return
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-        // PROXIMITY_SCREEN_WAKE_LOCK flag turns screen off when sensor is covered
+        // 32 is the hidden integer value for PROXIMITY_SCREEN_OFF_WAKE_LOCK
         if (proxLock == null) {
-            proxLock = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_WAKE_LOCK, "tacticom:prox")
+            proxLock = pm.newWakeLock(32, "tacticom:prox")
         }
         if (proxLock?.isHeld == false) proxLock?.acquire()
     }
