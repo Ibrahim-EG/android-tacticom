@@ -109,26 +109,31 @@ fun CallOverlay(onMinimize: () -> Unit) {
     val callState by Bus.callState.collectAsState()
     val peer by Bus.activeCallPeer.collectAsState()
     val vu by Bus.vu.collectAsState()
+    val ear by Bus.earpiece.collectAsState()
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier.fillMaxSize().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            verticalArrangement = Arrangement.SpaceBetween // Spread content to avoid overlap
         ) {
+            Spacer(Modifier.height(48.dp)) // Top padding
+
             when (callState) {
                 CallState.CALLING -> {
-                    Text("CALLING...", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium)
-                    Text(peer?.name ?: "Unknown", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(24.dp))
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(32.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("CALLING...", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium)
+                        Text(peer?.name ?: "Unknown", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(24.dp))
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    }
                     OutlinedButton(onClick = { Controller.hangUp() }) { Text("CANCEL", color = MaterialTheme.colorScheme.error) }
                 }
                 CallState.RINGING -> {
-                    Text("INCOMING CALL", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium)
-                    Text(peer?.name ?: "Unknown", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(40.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("INCOMING CALL", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium)
+                        Text(peer?.name ?: "Unknown", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(48.dp)) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Box(Modifier.size(80.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error).clickable { Controller.declineCall() }, contentAlignment = Alignment.Center) {
@@ -145,18 +150,28 @@ fun CallOverlay(onMinimize: () -> Unit) {
                     }
                 }
                 CallState.CONNECTED -> {
-                    Text("IN CALL WITH", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(peer?.name?.uppercase() ?: "UNKNOWN", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold)
-                    Spacer(Modifier.height(24.dp))
-                    Box(Modifier.fillMaxWidth().height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)) {
-                        Box(Modifier.fillMaxWidth(fraction = vu.coerceIn(0f, 1f)).height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondary))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("IN CALL WITH", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(peer?.name?.uppercase() ?: "UNKNOWN", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold)
+                        Spacer(Modifier.height(24.dp))
+                        Box(Modifier.fillMaxWidth().height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                            Box(Modifier.fillMaxWidth(fraction = vu.coerceIn(0f, 1f)).height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondary))
+                        }
+                        Spacer(Modifier.height(24.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("EARPIECE", color = MaterialTheme.colorScheme.onBackground)
+                            Spacer(Modifier.size(8.dp))
+                            Switch(checked = ear, onCheckedChange = { Controller.setEarpiece(it) })
+                        }
                     }
-                    Spacer(Modifier.height(32.dp))
-                    Box(Modifier.size(100.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error).clickable { Controller.hangUp() }, contentAlignment = Alignment.Center) {
-                        Text("END", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.Bold)
+                    
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        OutlinedButton(onClick = onMinimize) { Text("MINIMIZE") }
+                        Spacer(Modifier.height(16.dp))
+                        Box(Modifier.size(100.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error).clickable { Controller.hangUp() }, contentAlignment = Alignment.Center) {
+                            Text("END", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.Bold)
+                        }
                     }
-                    Spacer(Modifier.height(16.dp))
-                    OutlinedButton(onClick = onMinimize) { Text("MINIMIZE") }
                 }
                 else -> {}
             }
