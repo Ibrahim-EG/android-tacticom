@@ -20,6 +20,8 @@ import java.net.Socket
 import java.nio.ByteBuffer
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 object NetworkManager {
@@ -35,25 +37,16 @@ object NetworkManager {
     private var mcastSocket: MulticastSocket? = null
     private var mcastLock: WifiManager.MulticastLock? = null
     @Volatile var running = false
-    private val writeLock = Any()
 
-    fun getLocalIPv4(): String {
-        try {
-            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
-            for (intf in interfaces) {
-                if (intf.isLoopback || !intf.isUp) continue
-                val addrs = Collections.list(intf.inetAddresses)
-                for (addr in addrs) {
-                    if (!addr.isLoopbackAddress && addr.hostAddress?.indexOf(':') == -1) return addr.hostAddress!!
-                }
-            }
-        } catch (e: Exception) { Log.e(TAG, "IP error", e) }
-        return "127.0.0.1"
-    }
+    // THE FIX: every outgoing frame is queued and written by ONE background
+    // thread. Android blocks socket writes on the UI thread, which is why
+    // "Accept" / chat / bell never reached the other phone before.
+    private val outQueue = LinkedBlockingQueue<Pair<Byte, ByteArray>>(1000)
 
     fun start(ctx: Context) {
         if (running) return
         running = true
+        startWriter()
         startServer()
         startDiscovery(ctx)
     }
@@ -64,6 +57,25 @@ object NetworkManager {
         runCatching { serverSocket?.close() }
         runCatching { mcastSocket?.close() }
         runCatching { mcastLock?.release() }
+    }
+
+    private fun startWriter() {
+        thread(name = "tcp-writer") {
+            while (running) {
+                val frame = try { outQueue.poll(300, TimeUnit.MILLISECONDS) } catch (_: Exception) { null } ?: continue
+                val s = activeSocket
+                if (s == null || s.isClosed) continue
+                try {
+                    val out = s.getOutputStream()
+                    val payload = ByteArray(frame.second.size + 1)
+                    payload[0] = frame.first
+                    System.arraycopy(frame.second, 0, payload, 1, frame.second.size)
+                    out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
+                    out.write(payload)
+                    out.flush()
+                } catch (e: Exception) { Log.e(TAG, "Write error", e) }
+            }
+        }
     }
 
     private fun startServer() {
@@ -78,7 +90,7 @@ object NetworkManager {
                     if (activeSocket != null && !activeSocket!!.isClosed) s.close()
                     else {
                         activeSocket = s
-                        sendHello(s)
+                        sendHello()
                         thread(name = "tcp-reader") { readLoop(s) }
                     }
                 }
@@ -89,7 +101,6 @@ object NetworkManager {
     fun connectToPeer(peer: Peer, onConnected: () -> Unit, onFailed: () -> Unit) {
         thread(name = "tcp-client") {
             try {
-                // FIX: close old socket WITHOUT resetting the call state
                 runCatching { activeSocket?.close() }
                 activeSocket = null
                 Log.d(TAG, "Connecting to ${peer.ip}:$TCP_PORT")
@@ -98,7 +109,7 @@ object NetworkManager {
                 s.tcpNoDelay = true
                 activeSocket = s
                 Bus.connectedPeer.value = peer
-                sendHello(s)
+                sendHello()
                 onConnected()
                 readLoop(s)
             } catch (e: Exception) {
@@ -109,9 +120,9 @@ object NetworkManager {
         }
     }
 
-    private fun sendHello(s: Socket) {
+    private fun sendHello() {
         val json = JSONObject().put("type", "hello").put("id", Store.myId).put("name", Store.activeName())
-        writeFrame(0, json.toString().toByteArray(), s)
+        sendJson(json.toString().toByteArray())
     }
 
     private fun readLoop(s: Socket) {
@@ -138,15 +149,6 @@ object NetworkManager {
                 val peer = peers.values.firstOrNull { it.id == id } ?: Peer(id, name, activeSocket?.inetAddress?.hostAddress ?: "", TCP_PORT, false)
                 Bus.connectedPeer.value = peer
             }
-            "chat" -> {
-                val text = json.optString("text")
-                val time = json.optLong("time", System.currentTimeMillis())
-                val msg = ChatMessage(java.util.UUID.randomUUID().toString(), text, time, false)
-                val peer = Bus.connectedPeer.value ?: return
-                Store.saveChatMessage(peer.id, msg)
-                if (Bus.currentChatPeer.value?.id == peer.id) Bus.chatMessages.value = Store.getChatHistory(peer.id)
-                else Bus.toastMsg.value = "New message from ${peer.name}"
-            }
             "call_req" -> {
                 val peer = Bus.connectedPeer.value ?: return
                 Bus.activeCallPeer.value = peer
@@ -159,7 +161,6 @@ object NetworkManager {
                 com.tacticom.app.Controller.startAudio()
             }
             "call_dec" -> com.tacticom.app.Controller.handleDisconnect()
-            "ring" -> com.tacticom.app.Controller.ringLocal(json.optString("from", "Someone"))
         }
     }
 
@@ -169,37 +170,11 @@ object NetworkManager {
         return buf
     }
 
-    private fun writeFrame(type: Byte, data: ByteArray, s: Socket? = activeSocket) {
-        if (s == null || s.isClosed) return
-        synchronized(writeLock) {
-            runCatching {
-                val out = s.getOutputStream()
-                val payload = ByteArray(data.size + 1); payload[0] = type
-                System.arraycopy(data, 0, payload, 1, data.size)
-                out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
-                out.write(payload); out.flush()
-            }
-        }
-    }
+    fun sendJson(bytes: ByteArray) { outQueue.offer(0 to bytes) }
 
-    fun sendJson(bytes: ByteArray) = writeFrame(0, bytes)
-    fun sendAudio(bytes: ByteArray) = writeFrame(1, bytes)
-
-    fun sendChatMessage(text: String) {
-        val json = JSONObject().put("type", "chat").put("text", text).put("time", System.currentTimeMillis())
-        sendJson(json.toString().toByteArray())
-    }
-
-    fun disconnect() {
-        runCatching { activeSocket?.close() }
-        activeSocket = null
-        Bus.connectedPeer.value = null
-        Bus.callState.value = CallState.IDLE
-        Bus.activeCallPeer.value = null
-    }
-
-    fun ringPeer(peer: Peer) {
-        sendJson(JSONObject().put("type", "ring").put("from", Store.activeName()).toString().toByteArray())
+    fun sendAudio(bytes: ByteArray) {
+        if (outQueue.remainingCapacity() == 0) outQueue.poll()
+        outQueue.offer(1 to bytes)
     }
 
     fun sendCallRequest() {
@@ -212,6 +187,14 @@ object NetworkManager {
 
     fun sendCallDecline() {
         sendJson(JSONObject().put("type", "call_dec").toString().toByteArray())
+    }
+
+    fun disconnect() {
+        runCatching { activeSocket?.close() }
+        activeSocket = null
+        Bus.connectedPeer.value = null
+        Bus.callState.value = CallState.IDLE
+        Bus.activeCallPeer.value = null
     }
 
     private fun startDiscovery(ctx: Context) {
