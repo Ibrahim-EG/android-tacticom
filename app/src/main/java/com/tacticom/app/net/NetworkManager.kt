@@ -89,15 +89,17 @@ object NetworkManager {
     fun connectToPeer(peer: Peer, onConnected: () -> Unit, onFailed: () -> Unit) {
         thread(name = "tcp-client") {
             try {
-                disconnect()
+                // FIX: close old socket WITHOUT resetting the call state
+                runCatching { activeSocket?.close() }
+                activeSocket = null
                 Log.d(TAG, "Connecting to ${peer.ip}:$TCP_PORT")
                 val s = Socket()
-                s.connect(InetSocketAddress(peer.ip, TCP_PORT), 3000) // 3s timeout
+                s.connect(InetSocketAddress(peer.ip, TCP_PORT), 3000)
                 s.tcpNoDelay = true
                 activeSocket = s
                 Bus.connectedPeer.value = peer
                 sendHello(s)
-                onConnected() // ONLY fire callback when socket is physically open
+                onConnected()
                 readLoop(s)
             } catch (e: Exception) {
                 Log.e(TAG, "Connect failed", e)
@@ -182,7 +184,7 @@ object NetworkManager {
 
     fun sendJson(bytes: ByteArray) = writeFrame(0, bytes)
     fun sendAudio(bytes: ByteArray) = writeFrame(1, bytes)
-    
+
     fun sendChatMessage(text: String) {
         val json = JSONObject().put("type", "chat").put("text", text).put("time", System.currentTimeMillis())
         sendJson(json.toString().toByteArray())
@@ -237,8 +239,8 @@ object NetworkManager {
                 runCatching {
                     val s = mcastSocket
                     if (s != null) {
-                        val json = JSONObject().put("id", Store.myId).put("name", Store.activeName())
-                        s.send(DatagramPacket(json.toString().toByteArray(), json.toString().toByteArray().size, InetAddress.getByName(UDP_GROUP), UDP_PORT))
+                        val payload = JSONObject().put("id", Store.myId).put("name", Store.activeName()).toString().toByteArray()
+                        s.send(DatagramPacket(payload, payload.size, InetAddress.getByName(UDP_GROUP), UDP_PORT))
                     }
                 }; Thread.sleep(2000)
             }
