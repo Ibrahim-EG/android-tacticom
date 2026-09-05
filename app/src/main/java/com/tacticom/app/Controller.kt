@@ -22,10 +22,27 @@ object Controller {
         if (audio == null) audio = AudioEngine(ctx).apply { onChunk = { NetworkManager.sendAudio(it) } }
     }
 
+    fun openChat(peer: Peer) {
+        Bus.currentChatPeer.value = peer
+        Bus.chatMessages.value = Store.getChatHistory(peer.id)
+        if (Bus.connectedPeer.value?.id != peer.id) {
+            NetworkManager.connectToPeer(peer)
+        }
+    }
+
+    fun sendChat(text: String) {
+        val peer = Bus.currentChatPeer.value ?: return
+        if (text.isBlank()) return
+        val msg = ChatMessage(java.util.UUID.randomUUID().toString(), text, System.currentTimeMillis(), true)
+        Store.saveChatMessage(peer.id, msg)
+        Bus.chatMessages.value = Store.getChatHistory(peer.id)
+        NetworkManager.sendChatMessage(text)
+    }
+
     fun callPeer(peer: Peer) {
-        Bus.activePeer.value = peer
+        Bus.activeCallPeer.value = peer
         Bus.callState.value = CallState.CALLING
-        NetworkManager.connectToPeer(peer)
+        if (Bus.connectedPeer.value?.id != peer.id) NetworkManager.connectToPeer(peer)
         NetworkManager.sendJson(JSONObject().put("type", "incoming_call").put("from", Store.activeName()).toString().toByteArray())
     }
 
@@ -56,10 +73,9 @@ object Controller {
     fun stopRinging() { TacticomService.instance?.stopRing() }
 
     fun ringPeer(peer: Peer) { NetworkManager.ringPeer(peer) }
-    fun ringLocal(from: String) { TacticomService.instance?.startRing(from, 15000) } // Manual bell is 15s
+    fun ringLocal(from: String) { TacticomService.instance?.startRing(from, 15000) }
 
     fun setEarpiece(on: Boolean) {
-        Bus.earpiece.value = on // Note: earpiece flow removed from Bus to simplify, but kept here for future
         audio?.earpiece = on; audio?.applyRouting()
         if (Bus.callState.value == CallState.CONNECTED) { audio?.stopPlayback(); audio?.startPlayback() }
     }
