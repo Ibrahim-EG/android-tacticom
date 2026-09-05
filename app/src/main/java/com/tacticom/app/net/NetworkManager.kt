@@ -38,9 +38,6 @@ object NetworkManager {
     private var mcastLock: WifiManager.MulticastLock? = null
     @Volatile var running = false
 
-    // THE FIX: every outgoing frame is queued and written by ONE background
-    // thread. Android blocks socket writes on the UI thread, which is why
-    // "Accept" / chat / bell never reached the other phone before.
     private val outQueue = LinkedBlockingQueue<Pair<Byte, ByteArray>>(1000)
 
     fun start(ctx: Context) {
@@ -170,11 +167,12 @@ object NetworkManager {
         return buf
     }
 
-    fun sendJson(bytes: ByteArray) { outQueue.offer(0 to bytes) }
+    // FIX: Explicitly cast 0 and 1 to Byte so Kotlin doesn't infer Int
+    fun sendJson(bytes: ByteArray) { outQueue.offer(0.toByte() to bytes) }
 
     fun sendAudio(bytes: ByteArray) {
         if (outQueue.remainingCapacity() == 0) outQueue.poll()
-        outQueue.offer(1 to bytes)
+        outQueue.offer(1.toByte() to bytes)
     }
 
     fun sendCallRequest() {
