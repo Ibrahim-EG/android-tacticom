@@ -4,8 +4,6 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
 import com.tacticom.app.Bus
-import com.tacticom.app.CallState
-import com.tacticom.app.ChatMessage
 import com.tacticom.app.Peer
 import com.tacticom.app.Store
 import org.json.JSONObject
@@ -14,11 +12,9 @@ import java.net.DatagramPacket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.MulticastSocket
-import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.ByteBuffer
-import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -95,7 +91,7 @@ object NetworkManager {
         }
     }
 
-    fun connectToPeer(peer: Peer, onConnected: () -> Unit, onFailed: () -> Unit) {
+    fun connectToPeer(peer: Peer) {
         thread(name = "tcp-client") {
             try {
                 runCatching { activeSocket?.close() }
@@ -107,11 +103,10 @@ object NetworkManager {
                 activeSocket = s
                 Bus.connectedPeer.value = peer
                 sendHello()
-                onConnected()
                 readLoop(s)
             } catch (e: Exception) {
                 Log.e(TAG, "Connect failed", e)
-                onFailed()
+                Bus.toastMsg.value = "Failed to connect"
                 disconnect()
             }
         }
@@ -131,10 +126,12 @@ object NetworkManager {
                 if (len <= 0 || len > 2_000_000) break
                 val body = readExact(ins, len) ?: break
                 if (body[0].toInt() == 0) handleJson(JSONObject(String(body, 1, len - 1)))
-                else if (Bus.callState.value == CallState.CONNECTED) com.tacticom.app.Controller.audio?.feed(body.copyOfRange(1, len))
+                else {
+                    com.tacticom.app.Controller.audio?.feed(body.copyOfRange(1, len))
+                }
             }
         } catch (e: Exception) { Log.e(TAG, "Read error", e) }
-        com.tacticom.app.Controller.handleDisconnect()
+        disconnect()
     }
 
     private fun handleJson(json: JSONObject) {
@@ -146,18 +143,6 @@ object NetworkManager {
                 val peer = peers.values.firstOrNull { it.id == id } ?: Peer(id, name, activeSocket?.inetAddress?.hostAddress ?: "", TCP_PORT, false)
                 Bus.connectedPeer.value = peer
             }
-            "call_req" -> {
-                val peer = Bus.connectedPeer.value ?: return
-                Bus.activeCallPeer.value = peer
-                Bus.callState.value = CallState.RINGING
-                com.tacticom.app.Controller.startRinging(json.optString("from", "Unknown"))
-            }
-            "call_acc" -> {
-                Bus.callState.value = CallState.CONNECTED
-                com.tacticom.app.Controller.stopRinging()
-                com.tacticom.app.Controller.startAudio()
-            }
-            "call_dec" -> com.tacticom.app.Controller.handleDisconnect()
         }
     }
 
@@ -174,24 +159,11 @@ object NetworkManager {
         outQueue.offer(1.toByte() to bytes)
     }
 
-    fun sendCallRequest() {
-        sendJson(JSONObject().put("type", "call_req").put("from", Store.activeName()).toString().toByteArray())
-    }
-
-    fun sendCallAccept() {
-        sendJson(JSONObject().put("type", "call_acc").toString().toByteArray())
-    }
-
-    fun sendCallDecline() {
-        sendJson(JSONObject().put("type", "call_dec").toString().toByteArray())
-    }
-
     fun disconnect() {
         runCatching { activeSocket?.close() }
         activeSocket = null
         Bus.connectedPeer.value = null
-        Bus.callState.value = CallState.IDLE
-        Bus.activeCallPeer.value = null
+        Bus.isTransmitting.value = false
     }
 
     private fun startDiscovery(ctx: Context) {
