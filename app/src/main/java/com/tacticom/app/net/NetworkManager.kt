@@ -167,7 +167,6 @@ object NetworkManager {
         return buf
     }
 
-    // FIX: Explicitly cast 0 and 1 to Byte so Kotlin doesn't infer Int
     fun sendJson(bytes: ByteArray) { outQueue.offer(0.toByte() to bytes) }
 
     fun sendAudio(bytes: ByteArray) {
