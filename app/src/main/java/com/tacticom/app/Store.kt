@@ -20,10 +20,7 @@ object Store {
     val myId: String
         get() {
             var v = prefs.getString("id", null)
-            if (v == null) {
-                v = UUID.randomUUID().toString().take(8)
-                prefs.edit().putString("id", v).apply()
-            }
+            if (v == null) { v = UUID.randomUUID().toString().take(8); prefs.edit().putString("id", v).apply() }
             return v
         }
 
@@ -32,25 +29,17 @@ object Store {
         set(v) { prefs.edit().putBoolean("dark", v).apply() }
 
     var manualIps: List<String>
-        get() {
-            val arr = JSONArray(prefs.getString("ips", "[]"))
-            return (0 until arr.length()).map { arr.getString(it) }
-        }
+        get() { val arr = JSONArray(prefs.getString("ips", "[]")); return (0 until arr.length()).map { arr.getString(it) } }
         set(v) { prefs.edit().putString("ips", JSONArray(v).toString()).apply() }
 
     fun profiles(): List<Profile> {
         val arr = JSONArray(prefs.getString("profiles", "[]"))
-        return (0 until arr.length()).map {
-            val o = arr.getJSONObject(it)
-            Profile(o.getString("id"), o.getString("name"), o.optString("ringtone", "").ifEmpty { null })
-        }
+        return (0 until arr.length()).map { val o = arr.getJSONObject(it); Profile(o.getString("id"), o.getString("name"), o.optString("ringtone", "").ifEmpty { null }) }
     }
 
     fun saveProfiles(list: List<Profile>) {
         val arr = JSONArray()
-        list.forEach {
-            arr.put(JSONObject().put("id", it.id).put("name", it.name).put("ringtone", it.ringtone ?: ""))
-        }
+        list.forEach { arr.put(JSONObject().put("id", it.id).put("name", it.name).put("ringtone", it.ringtone ?: "")) }
         prefs.edit().putString("profiles", arr.toString()).apply()
     }
 
@@ -62,13 +51,29 @@ object Store {
         val list = profiles().toMutableList()
         if (list.isEmpty()) {
             val p = Profile(myId, "OP-" + (1000..9999).random(), null)
-            list.add(p)
-            saveProfiles(list)
-            activeProfileId = p.id
-            return p
+            list.add(p); saveProfiles(list); activeProfileId = p.id; return p
         }
         return list.firstOrNull { it.id == activeProfileId } ?: list[0]
     }
 
     fun activeName(): String = activeProfile().name
+
+    // --- CHAT HISTORY PERSISTENCE ---
+    fun getChatHistory(peerId: String): List<ChatMessage> {
+        val json = prefs.getString("chat_$peerId", "[]") ?: "[]"
+        val arr = JSONArray(json)
+        return (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            ChatMessage(o.getString("id"), o.getString("text"), o.getLong("time"), o.getBoolean("sent"))
+        }
+    }
+
+    fun saveChatMessage(peerId: String, msg: ChatMessage) {
+        val list = getChatHistory(peerId).toMutableList()
+        list.add(msg)
+        val trimmed = if (list.size > 500) list.takeLast(500) else list // Cap at 500 messages
+        val arr = JSONArray()
+        trimmed.forEach { arr.put(JSONObject().put("id", it.id).put("text", it.text).put("time", it.timestamp).put("sent", it.isSent)) }
+        prefs.edit().putString("chat_$peerId", arr.toString()).apply()
+    }
 }
