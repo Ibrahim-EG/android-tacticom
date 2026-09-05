@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import com.tacticom.app.Bus
 import com.tacticom.app.CallState
+import com.tacticom.app.ChatMessage
 import com.tacticom.app.Peer
 import com.tacticom.app.Store
 import org.json.JSONObject
@@ -49,6 +50,8 @@ object NetworkManager {
                     val s = serverSocket?.accept() ?: break
                     s.tcpNoDelay = true
                     activeSocket = s
+                    // Send hello immediately so the other side knows who connected
+                    sendJson(JSONObject().put("type", "hello").put("id", Store.myId).put("name", Store.activeName()).toString().toByteArray())
                     thread(name = "server-reader") { readLoop(s) }
                 } catch (_: Exception) {}
             }
@@ -56,12 +59,16 @@ object NetworkManager {
     }
 
     fun connectToPeer(peer: Peer) {
+        if (activeSocket != null && Bus.connectedPeer.value?.id == peer.id) return
         if (activeSocket != null) disconnect()
+        
         thread(name = "client-connect") {
             try {
                 val s = Socket(peer.ip, peer.port)
                 s.tcpNoDelay = true
                 activeSocket = s
+                Bus.connectedPeer.value = peer
+                sendJson(JSONObject().put("type", "hello").put("id", Store.myId).put("name", Store.activeName()).toString().toByteArray())
                 readLoop(s)
             } catch (_: Exception) {
                 Bus.toastMsg.value = "Failed to connect"
@@ -92,11 +99,31 @@ object NetworkManager {
 
     private fun handleJson(json: JSONObject) {
         when (json.optString("type")) {
+            "hello" -> {
+                val id = json.optString("id")
+                val name = json.optString("name")
+                val ip = activeSocket?.inetAddress?.hostAddress ?: ""
+                val peer = peers.values.firstOrNull { it.id == id } ?: Peer(id, name, ip, 0, false)
+                Bus.connectedPeer.value = peer
+            }
+            "chat" -> {
+                val text = json.optString("text")
+                val time = json.optLong("time", System.currentTimeMillis())
+                val msg = ChatMessage(java.util.UUID.randomUUID().toString(), text, time, false)
+                val peer = Bus.connectedPeer.value
+                if (peer != null) {
+                    Store.saveChatMessage(peer.id, msg)
+                    if (Bus.currentChatPeer.value?.id == peer.id) {
+                        Bus.chatMessages.value = Store.getChatHistory(peer.id)
+                    } else {
+                        Bus.toastMsg.value = "New message from ${peer.name}"
+                    }
+                }
+            }
             "incoming_call" -> {
                 val name = json.optString("from", "Unknown")
-                val ip = activeSocket?.inetAddress?.hostAddress ?: ""
-                val peer = peers.values.firstOrNull { it.ip == ip } ?: Peer(ip, name, ip, 0, false)
-                Bus.activePeer.value = peer
+                val peer = Bus.connectedPeer.value ?: return
+                Bus.activeCallPeer.value = peer
                 Bus.callState.value = CallState.RINGING
                 com.tacticom.app.Controller.startRinging(name)
             }
@@ -105,10 +132,7 @@ object NetworkManager {
                 com.tacticom.app.Controller.stopRinging()
                 com.tacticom.app.Controller.startAudio()
             }
-            "call_declined" -> {
-                com.tacticom.app.Controller.handleDisconnect()
-            }
-            "ring" -> com.tacticom.app.Controller.ringLocal(json.optString("from", "Someone"))
+            "call_declined" -> com.tacticom.app.Controller.handleDisconnect()
         }
     }
 
@@ -133,27 +157,18 @@ object NetworkManager {
 
     fun sendJson(bytes: ByteArray) = writeFrame(0, bytes)
     fun sendAudio(bytes: ByteArray) = writeFrame(1, bytes)
+    
+    fun sendChatMessage(text: String) {
+        val json = JSONObject().put("type", "chat").put("text", text).put("time", System.currentTimeMillis())
+        sendJson(json.toString().toByteArray())
+    }
 
     fun disconnect() {
         runCatching { activeSocket?.close() }
         activeSocket = null
+        Bus.connectedPeer.value = null
         Bus.callState.value = CallState.IDLE
-        Bus.activePeer.value = null
-    }
-
-    fun ringPeer(peer: Peer) {
-        thread {
-            runCatching {
-                val s = Socket(peer.ip, peer.port)
-                s.tcpNoDelay = true
-                val json = JSONObject().put("type", "ring").put("from", Store.activeName()).toString().toByteArray()
-                val payload = ByteArray(json.size + 1); payload[0] = 0
-                System.arraycopy(json, 0, payload, 1, json.size)
-                val out = s.getOutputStream()
-                out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
-                out.write(payload); out.flush(); s.close()
-            }
-        }
+        Bus.activeCallPeer.value = null
     }
 
     private fun startDiscovery(ctx: Context) {
