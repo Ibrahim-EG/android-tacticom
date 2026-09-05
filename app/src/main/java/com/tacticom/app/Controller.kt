@@ -51,7 +51,10 @@ object Controller {
             NetworkManager.enterHostedSession(session.id)
             Bus.currentSession.value = session
             Bus.sessionMembers.value = listOf(Store.activeName())
-            startAudio()
+            // Replaced startAudio() with direct calls
+            initAudio()
+            audio?.startCapture()
+            audio?.startPlayback()
         } else {
             Bus.currentSession.value = session
             NetworkManager.joinSession(session.id, session.hostIp, session.hostPort, password)
