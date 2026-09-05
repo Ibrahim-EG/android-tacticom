@@ -2,7 +2,6 @@ package com.tacticom.app
 
 import android.content.Context
 import android.content.Intent
-import android.os.PowerManager
 import android.util.Log
 import com.tacticom.app.audio.AudioEngine
 import com.tacticom.app.net.NetworkManager
@@ -11,7 +10,6 @@ object Controller {
     private const val TAG = "Controller"
     @Volatile var audio: AudioEngine? = null
     @Volatile var appContext: Context? = null
-    private var proxLock: PowerManager.WakeLock? = null
 
     fun startService(c: Context) {
         appContext = c.applicationContext
@@ -22,42 +20,66 @@ object Controller {
 
     fun initAudio() {
         val ctx = appContext ?: return
-        if (audio == null) audio = AudioEngine(ctx).apply { onChunk = { NetworkManager.sendAudio(it) } }
+        if (audio == null) audio = AudioEngine(ctx).apply { onChunk = { chunk ->
+            Bus.currentSession.value?.let { session ->
+                NetworkManager.sendAudio(session.id, chunk)
+            }
+        } }
     }
 
-    fun connectToPeer(peer: Peer) {
-        initAudio()
-        NetworkManager.connectToPeer(peer)
-        audio?.startCapture()
-        audio?.startPlayback()
-        enableProximity()
-    }
-
-    fun onIncomingConnection(fromName: String) {
-        // Ring when someone connects to you
-        TacticomService.instance?.startRing(fromName, 15000)
+    fun callPeer(peer: Peer) {
+        // Create a session and ring the peer
+        val sessionId = NetworkManager.createSession("Call", null, peer.ip, peer.port)
+        NetworkManager.sendRing(peer.ip, peer.port, sessionId, "Call", false)
         
-        // Auto-start audio for the connection
+        Bus.toastMsg.value = "Ringing ${peer.name}..."
+    }
+
+    fun onIncomingRing(from: String, sessionId: String, sessionName: String, hostIp: String, hostPort: Int, locked: Boolean) {
+        // Show notification and ring for 45 seconds
+        TacticomService.instance?.startRing(from, 45000)
+        
+        // Add to sessions list
+        val session = Session(sessionId, sessionName, from, from, hostIp, hostPort, locked, 1)
+        Bus.sessions.value = Bus.sessions.value + session
+    }
+
+    fun joinSession(session: Session, password: String?) {
+        Bus.currentSession.value = session
+        NetworkManager.joinSession(session.id, session.hostIp, session.hostPort, password)
+    }
+
+    fun onJoinSuccess(sessionId: String) {
         initAudio()
         audio?.startCapture()
         audio?.startPlayback()
-        enableProximity()
+        Bus.toastMsg.value = "Joined session"
     }
 
-    fun disconnect() {
-        stopAudio()
-        disableProximity()
-        NetworkManager.disconnect()
+    fun onJoinFailed() {
+        Bus.currentSession.value = null
+    }
+
+    fun leaveSession() {
+        Bus.currentSession.value?.let { session ->
+            NetworkManager.leaveSession(session.id)
+        }
     }
 
     fun startTransmit() {
-        Bus.isTransmitting.value = true
-        audio?.transmitting = true
+        Bus.currentSession.value?.let { session ->
+            Bus.isTransmitting.value = true
+            audio?.transmitting = true
+            NetworkManager.transmitStart(session.id)
+        }
     }
 
     fun stopTransmit() {
-        Bus.isTransmitting.value = false
-        audio?.transmitting = false
+        Bus.currentSession.value?.let { session ->
+            Bus.isTransmitting.value = false
+            audio?.transmitting = false
+            NetworkManager.transmitStop(session.id)
+        }
     }
 
     fun startAudio() { 
@@ -69,18 +91,5 @@ object Controller {
     fun stopAudio() { 
         audio?.stopCapture()
         audio?.stopPlayback() 
-    }
-
-    private fun enableProximity() {
-        val ctx = appContext ?: return
-        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (proxLock == null) {
-            proxLock = pm.newWakeLock(32, "tacticom:prox")
-        }
-        if (proxLock?.isHeld == false) proxLock?.acquire()
-    }
-
-    private fun disableProximity() {
-        runCatching { proxLock?.let { if (it.isHeld) it.release() } }
     }
 }
