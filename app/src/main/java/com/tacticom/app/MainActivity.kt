@@ -34,7 +34,6 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Send
@@ -85,32 +84,97 @@ class MainActivity : ComponentActivity() {
 fun Root() {
     var tab by remember { mutableStateOf(0) }
     var inChat by remember { mutableStateOf(false) }
+    var callMinimized by remember { mutableStateOf(false) }
     val callState by Bus.callState.collectAsState()
-    val items = listOf("Devices" to Icons.Default.Home, "Active Call" to Icons.Default.Mic, "Settings" to Icons.Default.Person)
-    
+
+    LaunchedEffect(callState) { if (callState == CallState.IDLE) callMinimized = false }
+
     Box(Modifier.fillMaxSize()) {
         if (inChat) {
-            ChatScreen(onBack = { 
-                inChat = false
-                Bus.currentChatPeer.value = null 
-            })
+            ChatScreen(onBack = { inChat = false; Bus.currentChatPeer.value = null })
         } else {
             Scaffold(
                 topBar = { TopAppBar(title = { Text("TACTICOM", color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.ExtraBold) }) },
-                bottomBar = { NavigationBar { items.forEachIndexed { i, p -> NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(p.second, null) }, label = { Text(p.first) }) } } }
-            ) { pad -> 
-                Box(Modifier.padding(pad)) { 
-                    when (tab) { 
-                        0 -> DevicesScreen(onChatClick = { inChat = true })
-                        1 -> IntercomScreen()
-                        else -> SettingsScreen() 
-                    } 
-                } 
+                bottomBar = {
+                    NavigationBar {
+                        listOf("Devices" to Icons.Default.Home, "Settings" to Icons.Default.Person).forEachIndexed { i, p ->
+                            NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(p.second, null) }, label = { Text(p.first) })
+                        }
+                    }
+                }
+            ) { pad ->
+                Box(Modifier.padding(pad)) { if (tab == 0) DevicesScreen(onChatClick = { inChat = true }) else SettingsScreen() }
             }
         }
-        
-        if (callState == CallState.CALLING) CallingOverlay()
-        if (callState == CallState.RINGING) IncomingCallOverlay()
+
+        if (callState != CallState.IDLE && !callMinimized) {
+            CallOverlay(onMinimize = { callMinimized = true })
+        } else if (callState == CallState.CONNECTED && callMinimized) {
+            Box(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondary).clickable { callMinimized = false }.padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) { Text("IN CALL — TAP TO RETURN", color = MaterialTheme.colorScheme.onSecondary, fontWeight = FontWeight.Bold) }
+        }
+    }
+}
+
+@Composable
+fun CallOverlay(onMinimize: () -> Unit) {
+    val callState by Bus.callState.collectAsState()
+    val peer by Bus.activeCallPeer.collectAsState()
+    val vu by Bus.vu.collectAsState()
+
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            when (callState) {
+                CallState.CALLING -> {
+                    Text("CALLING...", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium)
+                    Text(peer?.name ?: "Unknown", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(24.dp))
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(32.dp))
+                    OutlinedButton(onClick = { Controller.hangUp() }) { Text("CANCEL", color = MaterialTheme.colorScheme.error) }
+                }
+                CallState.RINGING -> {
+                    Text("INCOMING CALL", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium)
+                    Text(peer?.name ?: "Unknown", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(40.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(48.dp)) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(Modifier.size(80.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error).clickable { Controller.declineCall() }, contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Close, "Decline", tint = MaterialTheme.colorScheme.onError, modifier = Modifier.size(40.dp))
+                            }
+                            Text("Decline", color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 8.dp))
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(Modifier.size(80.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondary).clickable { Controller.acceptCall() }, contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Call, "Accept", tint = MaterialTheme.colorScheme.onSecondary, modifier = Modifier.size(40.dp))
+                            }
+                            Text("Accept", color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 8.dp))
+                        }
+                    }
+                }
+                CallState.CONNECTED -> {
+                    Text("IN CALL WITH", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(peer?.name?.uppercase() ?: "UNKNOWN", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold)
+                    Spacer(Modifier.height(24.dp))
+                    Box(Modifier.fillMaxWidth().height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                        Box(Modifier.fillMaxWidth(fraction = vu.coerceIn(0f, 1f)).height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondary))
+                    }
+                    Spacer(Modifier.height(32.dp))
+                    Box(Modifier.size(100.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error).clickable { Controller.hangUp() }, contentAlignment = Alignment.Center) {
+                        Text("END", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedButton(onClick = onMinimize) { Text("MINIMIZE") }
+                }
+                else -> {}
+            }
+        }
     }
 }
 
@@ -157,7 +221,6 @@ fun ChatScreen(onBack: () -> Unit) {
 @Composable
 fun ChatBubble(msg: ChatMessage) {
     val isSent = msg.isSent
-    // FIX: Use 1D horizontal alignment (End/Start) instead of 2D (CenterEnd/CenterStart)
     val alignment = if (isSent) Alignment.End else Alignment.Start
     val bgColor = if (isSent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (isSent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -166,44 +229,6 @@ fun ChatBubble(msg: ChatMessage) {
         Box(
             modifier = Modifier.widthIn(max = 280.dp).clip(MaterialTheme.shapes.medium).background(bgColor).padding(12.dp)
         ) { Text(msg.text, color = textColor) }
-    }
-}
-
-@Composable
-fun CallingOverlay() {
-    val peer by Bus.activeCallPeer.collectAsState()
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background.copy(alpha = 0.95f)), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(24.dp)) {
-            Text("CALLING...", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium)
-            Text(peer?.name ?: "Unknown", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-            OutlinedButton(onClick = { Controller.hangUp() }) { Text("CANCEL", color = MaterialTheme.colorScheme.error) }
-        }
-    }
-}
-
-@Composable
-fun IncomingCallOverlay() {
-    val peer by Bus.activeCallPeer.collectAsState()
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(32.dp)) {
-            Text("INCOMING CALL", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium)
-            Text(peer?.name ?: "Unknown", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(48.dp)) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(Modifier.size(80.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error).clickable { Controller.declineCall() }, contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Close, "Decline", tint = MaterialTheme.colorScheme.onError, modifier = Modifier.size(40.dp))
-                    }
-                    Text("Decline", color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 8.dp))
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(Modifier.size(80.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondary).clickable { Controller.acceptCall() }, contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Call, "Accept", tint = MaterialTheme.colorScheme.onSecondary, modifier = Modifier.size(40.dp))
-                    }
-                    Text("Accept", color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 8.dp))
-                }
-            }
-        }
     }
 }
 
@@ -227,21 +252,6 @@ fun DevicesScreen(onChatClick: () -> Unit) {
                 }
             }
         }
-    }
-}
-
-@Composable
-fun IntercomScreen() {
-    val callState by Bus.callState.collectAsState()
-    val activePeer by Bus.activeCallPeer.collectAsState()
-    val vu by Bus.vu.collectAsState()
-    if (callState != CallState.CONNECTED) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No active call.", color = MaterialTheme.colorScheme.onBackground) }; return }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("CONNECTED TO", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(activePeer?.name?.uppercase() ?: "UNKNOWN", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold)
-        Box(Modifier.fillMaxWidth().height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)) { Box(Modifier.fillMaxWidth(fraction = vu.coerceIn(0f, 1f)).height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondary)) }
-        Spacer(Modifier.weight(1f))
-        Box(Modifier.size(120.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error).clickable { Controller.hangUp() }, contentAlignment = Alignment.Center) { Text("HANG UP", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.Bold) }
     }
 }
 
