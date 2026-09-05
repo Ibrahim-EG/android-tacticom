@@ -19,6 +19,7 @@ class AudioEngine(private val ctx: Context) {
         const val CHUNK = RATE * 10 / 1000 * 2
     }
 
+    @Volatile var transmitting = false
     @Volatile var earpiece = false
     @Volatile var onChunk: ((ByteArray) -> Unit)? = null
 
@@ -30,6 +31,7 @@ class AudioEngine(private val ctx: Context) {
 
     private val audioManager get() = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
+    // Only start capturing when PTT is pressed
     @SuppressLint("MissingPermission")
     fun startCapture() {
         if (capturing) return
@@ -38,7 +40,7 @@ class AudioEngine(private val ctx: Context) {
             try {
                 val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
                 val rec = AudioRecord(
-                    MediaRecorder.AudioSource.MIC, RATE, // Fixed: Standard MIC instead of VOICE_COMMUNICATION
+                    MediaRecorder.AudioSource.MIC, RATE,
                     AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, CHUNK * 4)
                 )
                 record = rec
@@ -47,22 +49,32 @@ class AudioEngine(private val ctx: Context) {
                 while (capturing) {
                     val read = rec.read(buf, 0, CHUNK)
                     if (read <= 0) continue
+                    
+                    // Calculate VU meter
                     var sum = 0.0
                     for (i in 0 until read step 2) {
                         val v = ((buf[i + 1].toInt() shl 8) or (buf[i].toInt() and 0xFF)) / 32768.0
                         sum += v * v
                     }
                     Bus.vu.value = sqrt(sum / (read / 2)).toFloat()
-                    onChunk?.invoke(buf.copyOf(read)) // Fixed: Always send audio when connected
+                    
+                    // Only send audio when actually transmitting
+                    if (transmitting) onChunk?.invoke(buf.copyOf(read))
                 }
                 runCatching { rec.stop(); rec.release() }
                 record = null
-            } catch (_: Exception) { Bus.toastMsg.value = "Mic error" }
+            } catch (_: Exception) { 
+                Bus.toastMsg.value = "Mic error" 
+            }
         }
     }
 
-    fun stopCapture() { capturing = false }
+    fun stopCapture() { 
+        capturing = false 
+        Bus.vu.value = 0f // Reset VU meter when not capturing
+    }
 
+    // Playback runs continuously to receive audio
     fun startPlayback() {
         if (playing) return
         playing = true
@@ -83,7 +95,10 @@ class AudioEngine(private val ctx: Context) {
         }
     }
 
-    fun stopPlayback() { playing = false; queue.clear() }
+    fun stopPlayback() { 
+        playing = false
+        queue.clear()
+    }
 
     fun feed(data: ByteArray) {
         if (queue.remainingCapacity() == 0) queue.poll()
