@@ -2,12 +2,10 @@ package com.tacticom.app
 
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import com.tacticom.app.audio.AudioEngine
 import com.tacticom.app.net.NetworkManager
 
 object Controller {
-    private const val TAG = "Controller"
     @Volatile var audio: AudioEngine? = null
     @Volatile var appContext: Context? = null
 
@@ -20,28 +18,34 @@ object Controller {
 
     fun initAudio() {
         val ctx = appContext ?: return
-        if (audio == null) audio = AudioEngine(ctx).apply { onChunk = { chunk ->
-            Bus.currentSession.value?.let { session ->
-                NetworkManager.sendAudio(session.id, chunk)
-            }
-        } }
+        if (audio == null) audio = AudioEngine(ctx).apply { 
+            onChunk = { chunk ->
+                Bus.currentSession.value?.let { session ->
+                    NetworkManager.broadcastAudio(session.id, null, chunk)
+                }
+            } 
+        }
     }
 
     fun callPeer(peer: Peer) {
-        // Create a session and ring the peer
-        val sessionId = NetworkManager.createSession("Call", null, peer.ip, peer.port)
-        NetworkManager.sendRing(peer.ip, peer.port, sessionId, "Call", false)
+        val sessionId = NetworkManager.createSession("Call with ${peer.name}", null)
+        val session = Session(sessionId, "Call with ${peer.name}", Store.myId, Store.activeName(), NetworkManager.getLocalIPv4(), NetworkManager.TCP_PORT, false, 1)
+        Bus.currentSession.value = session
+        Bus.sessions.value = Bus.sessions.value + session
+        Bus.sessionMembers.value = listOf(Store.activeName())
         
-        Bus.toastMsg.value = "Ringing ${peer.name}..."
+        NetworkManager.sendRing(peer.ip, peer.port, sessionId, session.name, false)
+        initAudio()
+        audio?.startCapture()
+        audio?.startPlayback()
     }
 
     fun onIncomingRing(from: String, sessionId: String, sessionName: String, hostIp: String, hostPort: Int, locked: Boolean) {
-        // Show notification and ring for 45 seconds
         TacticomService.instance?.startRing(from, 45000)
-        
-        // Add to sessions list
         val session = Session(sessionId, sessionName, from, from, hostIp, hostPort, locked, 1)
-        Bus.sessions.value = Bus.sessions.value + session
+        if (Bus.sessions.value.none { it.id == sessionId }) {
+            Bus.sessions.value = Bus.sessions.value + session
+        }
     }
 
     fun joinSession(session: Session, password: String?) {
@@ -67,27 +71,15 @@ object Controller {
     }
 
     fun startTransmit() {
-        Bus.currentSession.value?.let { session ->
-            Bus.isTransmitting.value = true
-            audio?.transmitting = true
-            NetworkManager.transmitStart(session.id)
-        }
+        Bus.isTransmitting.value = true
+        audio?.transmitting = true
     }
 
     fun stopTransmit() {
-        Bus.currentSession.value?.let { session ->
-            Bus.isTransmitting.value = false
-            audio?.transmitting = false
-            NetworkManager.transmitStop(session.id)
-        }
+        Bus.isTransmitting.value = false
+        audio?.transmitting = false
     }
 
-    fun startAudio() { 
-        initAudio()
-        audio?.startCapture()
-        audio?.startPlayback()
-    }
-    
     fun stopAudio() { 
         audio?.stopCapture()
         audio?.stopPlayback() 
