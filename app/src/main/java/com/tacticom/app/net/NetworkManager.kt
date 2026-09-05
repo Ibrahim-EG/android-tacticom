@@ -3,6 +3,7 @@ package com.tacticom.app.net
 import android.content.Context
 import android.net.wifi.WifiManager
 import com.tacticom.app.Bus
+import com.tacticom.app.CallState
 import com.tacticom.app.Peer
 import com.tacticom.app.Store
 import org.json.JSONObject
@@ -20,6 +21,7 @@ object NetworkManager {
     @Volatile var serverSocket: ServerSocket? = null
     @Volatile var activeSocket: Socket? = null
     val peers = ConcurrentHashMap<String, Peer>()
+    private val lastSeen = ConcurrentHashMap<String, Long>()
     private var mcastSocket: MulticastSocket? = null
     private var mcastLock: WifiManager.MulticastLock? = null
     @Volatile var running = false
@@ -47,7 +49,6 @@ object NetworkManager {
                     val s = serverSocket?.accept() ?: break
                     s.tcpNoDelay = true
                     activeSocket = s
-                    Bus.isInCall.value = true
                     thread(name = "server-reader") { readLoop(s) }
                 } catch (_: Exception) {}
             }
@@ -56,18 +57,15 @@ object NetworkManager {
 
     fun connectToPeer(peer: Peer) {
         if (activeSocket != null) disconnect()
-        Bus.activeCall.value = peer
         thread(name = "client-connect") {
             try {
                 val s = Socket(peer.ip, peer.port)
                 s.tcpNoDelay = true
                 activeSocket = s
-                Bus.isInCall.value = true
-                sendJson(JSONObject().put("type", "hello").put("name", Store.activeName()).toString().toByteArray())
                 readLoop(s)
-            } catch (e: Exception) {
-                Bus.toastMsg.value = "Failed to connect to ${peer.name}"
-                disconnect()
+            } catch (_: Exception) {
+                Bus.toastMsg.value = "Failed to connect"
+                com.tacticom.app.Controller.handleDisconnect()
             }
         }
     }
@@ -75,88 +73,72 @@ object NetworkManager {
     private fun readLoop(s: Socket) {
         try {
             val ins = s.getInputStream()
-            while (running && Bus.isInCall.value) {
+            while (running) {
                 val lenBytes = readExact(ins, 4) ?: break
                 val len = ByteBuffer.wrap(lenBytes).int
                 if (len <= 0 || len > 2_000_000) break
                 val body = readExact(ins, len) ?: break
-                
-                if (body[0].toInt() == 0) { // JSON
-                    val json = JSONObject(String(body, 1, len - 1))
-                    handleJson(json)
-                } else { // Audio (1)
-                    Bus.receivingAudio.value = true
-                    com.tacticom.app.Controller.audio?.feed(body.copyOfRange(1, len))
+                if (body[0].toInt() == 0) {
+                    handleJson(JSONObject(String(body, 1, len - 1)))
+                } else {
+                    if (Bus.callState.value == CallState.CONNECTED) {
+                        com.tacticom.app.Controller.audio?.feed(body.copyOfRange(1, len))
+                    }
                 }
             }
         } catch (_: Exception) {}
-        disconnect()
+        com.tacticom.app.Controller.handleDisconnect()
     }
 
     private fun handleJson(json: JSONObject) {
         when (json.optString("type")) {
-            "hello" -> {
-                val name = json.optString("name", "Unknown")
-                if (Bus.activeCall.value == null) {
-                    val ip = activeSocket?.inetAddress?.hostAddress ?: ""
-                    val peer = peers.values.firstOrNull { it.ip == ip } ?: Peer(ip, name, ip, 0, false)
-                    Bus.activeCall.value = peer
-                }
+            "incoming_call" -> {
+                val name = json.optString("from", "Unknown")
+                val ip = activeSocket?.inetAddress?.hostAddress ?: ""
+                val peer = peers.values.firstOrNull { it.ip == ip } ?: Peer(ip, name, ip, 0, false)
+                Bus.activePeer.value = peer
+                Bus.callState.value = CallState.RINGING
+                com.tacticom.app.Controller.startRinging(name)
+            }
+            "call_accepted" -> {
+                Bus.callState.value = CallState.CONNECTED
+                com.tacticom.app.Controller.stopRinging()
+                com.tacticom.app.Controller.startAudio()
+            }
+            "call_declined" -> {
+                com.tacticom.app.Controller.handleDisconnect()
             }
             "ring" -> com.tacticom.app.Controller.ringLocal(json.optString("from", "Someone"))
         }
     }
 
     private fun readExact(ins: InputStream, n: Int): ByteArray? {
-        val buf = ByteArray(n)
-        var off = 0
-        while (off < n) {
-            val r = ins.read(buf, off, n - off)
-            if (r < 0) return null
-            off += r
-        }
+        val buf = ByteArray(n); var off = 0
+        while (off < n) { val r = ins.read(buf, off, n - off); if (r < 0) return null; off += r }
         return buf
     }
 
-    fun sendJson(bytes: ByteArray) {
+    private fun writeFrame(type: Byte, data: ByteArray) {
         val s = activeSocket ?: return
         synchronized(writeLock) {
             runCatching {
                 val out = s.getOutputStream()
-                val payload = ByteArray(bytes.size + 1)
-                payload[0] = 0
-                System.arraycopy(bytes, 0, payload, 1, bytes.size)
+                val payload = ByteArray(data.size + 1); payload[0] = type
+                System.arraycopy(data, 0, payload, 1, data.size)
                 out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
-                out.write(payload)
-                out.flush()
+                out.write(payload); out.flush()
             }
         }
     }
 
-    fun sendAudio(bytes: ByteArray) {
-        val s = activeSocket ?: return
-        synchronized(writeLock) {
-            runCatching {
-                val out = s.getOutputStream()
-                val payload = ByteArray(bytes.size + 1)
-                payload[0] = 1
-                System.arraycopy(bytes, 0, payload, 1, bytes.size)
-                out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
-                out.write(payload)
-                out.flush()
-            }
-        }
-    }
+    fun sendJson(bytes: ByteArray) = writeFrame(0, bytes)
+    fun sendAudio(bytes: ByteArray) = writeFrame(1, bytes)
 
     fun disconnect() {
         runCatching { activeSocket?.close() }
         activeSocket = null
-        Bus.isInCall.value = false
-        Bus.activeCall.value = null
-        Bus.transmitting.value = false
-        Bus.receivingAudio.value = false
-        com.tacticom.app.Controller.audio?.stopCapture()
-        com.tacticom.app.Controller.audio?.stopPlayback()
+        Bus.callState.value = CallState.IDLE
+        Bus.activePeer.value = null
     }
 
     fun ringPeer(peer: Peer) {
@@ -164,42 +146,31 @@ object NetworkManager {
             runCatching {
                 val s = Socket(peer.ip, peer.port)
                 s.tcpNoDelay = true
-                val out = s.getOutputStream()
                 val json = JSONObject().put("type", "ring").put("from", Store.activeName()).toString().toByteArray()
-                val payload = ByteArray(json.size + 1)
-                payload[0] = 0
+                val payload = ByteArray(json.size + 1); payload[0] = 0
                 System.arraycopy(json, 0, payload, 1, json.size)
+                val out = s.getOutputStream()
                 out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
-                out.write(payload)
-                out.flush()
-                s.close()
+                out.write(payload); out.flush(); s.close()
             }
         }
     }
 
     private fun startDiscovery(ctx: Context) {
         val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        mcastLock = wm.createMulticastLock("tacticom_mcast").apply {
-            setReferenceCounted(false)
-            acquire()
-        }
+        mcastLock = wm.createMulticastLock("tacticom_mcast").apply { setReferenceCounted(false); acquire() }
         thread(name = "discovery-rx") {
             try {
-                val s = MulticastSocket(50505)
-                s.reuseAddress = true
-                mcastSocket = s
+                val s = MulticastSocket(50505); s.reuseAddress = true; mcastSocket = s
                 s.joinGroup(InetAddress.getByName("239.255.255.250"))
                 val buf = ByteArray(512)
                 while (running) {
-                    val pkt = DatagramPacket(buf, buf.size)
-                    s.receive(pkt)
+                    val pkt = DatagramPacket(buf, buf.size); s.receive(pkt)
                     runCatching {
-                        val json = JSONObject(String(pkt.data, 0, pkt.length))
-                        val id = json.optString("id")
+                        val json = JSONObject(String(pkt.data, 0, pkt.length)); val id = json.optString("id")
                         if (id.isNotEmpty() && id != Store.myId) {
-                            val p = Peer(id, json.optString("name", "?"), pkt.address.hostAddress ?: "", json.optInt("port", 0), false)
-                            peers[id] = p
-                            Bus.peers.value = peers.values.sortedBy { it.name }
+                            peers[id] = Peer(id, json.optString("name", "?"), pkt.address.hostAddress ?: "", json.optInt("port", 0), false)
+                            lastSeen[id] = System.currentTimeMillis(); Bus.peers.value = peers.values.sortedBy { it.name }
                         }
                     }
                 }
@@ -214,8 +185,14 @@ object NetworkManager {
                         val payload = json.toString().toByteArray()
                         s.send(DatagramPacket(payload, payload.size, InetAddress.getByName("239.255.255.250"), 50505))
                     }
-                }
-                Thread.sleep(2000)
+                }; Thread.sleep(2000)
+            }
+        }
+        thread(name = "discovery-prune") {
+            while (running) {
+                Thread.sleep(5000); val now = System.currentTimeMillis()
+                val stale = lastSeen.filter { now - it.value > 10000 }.keys
+                if (stale.isNotEmpty()) { stale.forEach { peers.remove(it); lastSeen.remove(it) }; Bus.peers.value = peers.values.sortedBy { it.name } }
             }
         }
     }
