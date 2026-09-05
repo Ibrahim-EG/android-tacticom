@@ -36,7 +36,6 @@ object NetworkManager {
     @Volatile var running = false
 
     private val outQueue = LinkedBlockingQueue<Pair<Socket, Pair<Byte, ByteArray>>>(1000)
-    
     private val hostedSessions = ConcurrentHashMap<String, SessionState>()
     private val clientConnections = ConcurrentHashMap<String, Socket>()
 
@@ -44,6 +43,8 @@ object NetworkManager {
         val id: String,
         val name: String,
         val password: String?,
+        val createdAt: Long = System.currentTimeMillis(),
+        @Volatile var hostIn: Boolean = false,
         val members: ConcurrentHashMap<Socket, String> = ConcurrentHashMap()
     )
 
@@ -81,6 +82,18 @@ object NetworkManager {
                 } catch (e: Exception) { Log.e(TAG, "Write error", e) }
             }
         }
+    }
+
+    private fun writeDirect(s: Socket, type: Byte, bytes: ByteArray) {
+        try {
+            val out = s.getOutputStream()
+            val payload = ByteArray(bytes.size + 1)
+            payload[0] = type
+            System.arraycopy(bytes, 0, payload, 1, bytes.size)
+            out.write(ByteBuffer.allocate(4).putInt(payload.size).array())
+            out.write(payload)
+            out.flush()
+        } catch (e: Exception) { Log.e(TAG, "Direct write error", e) }
     }
 
     private fun startServer() {
@@ -130,13 +143,14 @@ object NetworkManager {
     private fun handleJson(json: JSONObject, s: Socket) {
         when (json.optString("type")) {
             "ring" -> {
-                val from = json.optString("from", "Unknown")
-                val sessionId = json.optString("session_id")
-                val sessionName = json.optString("session_name", "Call")
-                val hostIp = json.optString("host_ip")
-                val hostPort = json.optInt("host_port")
-                val locked = json.optBoolean("locked", false)
-                com.tacticom.app.Controller.onIncomingRing(from, sessionId, sessionName, hostIp, hostPort, locked)
+                com.tacticom.app.Controller.onIncomingRing(
+                    json.optString("from", "Unknown"),
+                    json.optString("session_id"),
+                    json.optString("session_name", "Call"),
+                    json.optString("host_ip"),
+                    json.optInt("host_port"),
+                    json.optBoolean("locked", false)
+                )
             }
             "join_session" -> {
                 val sessionId = json.optString("session_id")
@@ -145,28 +159,24 @@ object NetworkManager {
                 val session = hostedSessions[sessionId]
                 if (session != null) {
                     if (session.password != null && hashPassword(sessionId, password) != session.password) {
-                        sendJson(s, JSONObject().put("type", "join_error").put("reason", "Incorrect password").toString().toByteArray())
+                        writeDirect(s, 0, JSONObject().put("type", "join_error").put("reason", "Incorrect password").toString().toByteArray())
                         return
                     }
                     session.members[s] = memberName
+                    writeDirect(s, 0, JSONObject().put("type", "join_success").put("session_id", sessionId).toString().toByteArray())
                     broadcastSessionUpdate(sessionId)
-                    sendJson(s, JSONObject().put("type", "join_success").put("session_id", sessionId).toString().toByteArray())
                 }
             }
             "leave_session" -> cleanupConnection(s)
             "tx_start", "tx_stop" -> {
-                val sessionId = json.optString("session_id")
-                val session = hostedSessions[sessionId]
+                val session = hostedSessions[json.optString("session_id")]
                 if (session != null) {
-                    session.members.keys.forEach { memberSocket ->
-                        if (memberSocket != s && !memberSocket.isClosed) sendJson(memberSocket, json.toString().toByteArray())
-                    }
+                    session.members.keys.forEach { m -> if (m != s && !m.isClosed) writeDirect(m, 0, json.toString().toByteArray()) }
                 }
             }
             "join_success" -> {
-                val sessionId = json.optString("session_id")
-                clientConnections[sessionId] = s
-                com.tacticom.app.Controller.onJoinSuccess(sessionId)
+                clientConnections[json.optString("session_id")] = s
+                com.tacticom.app.Controller.onJoinSuccess(json.optString("session_id"))
             }
             "join_error" -> {
                 Bus.toastMsg.value = json.optString("reason", "Failed to join")
@@ -197,7 +207,7 @@ object NetworkManager {
             if (session.members.containsKey(s)) {
                 session.members.remove(s)
                 broadcastSessionUpdate(sessionId)
-                if (session.members.isEmpty() && Bus.currentSession.value?.id != sessionId) {
+                if (!session.hostIn && session.members.isEmpty()) {
                     hostedSessions.remove(sessionId)
                     Bus.sessions.value = Bus.sessions.value.filter { it.id != sessionId }
                 }
@@ -206,26 +216,27 @@ object NetworkManager {
         clientConnections.entries.removeIf { it.value == s }
     }
 
+    private fun memberNames(session: SessionState): List<String> {
+        val list = mutableListOf<String>()
+        if (session.hostIn) list.add(Store.activeName())
+        list.addAll(session.members.values)
+        return list
+    }
+
     private fun broadcastSessionUpdate(sessionId: String) {
         val session = hostedSessions[sessionId] ?: return
-        val members = session.members.values.joinToString("|")
-        val update = JSONObject().put("type", "session_update").put("session_id", sessionId).put("members", members).toString().toByteArray()
-        
-        // Send to network members
-        session.members.keys.forEach { if (!it.isClosed) sendJson(it, update) }
-        
-        // Update local UI if we are host
-        if (Bus.currentSession.value?.id == sessionId) {
-            Bus.sessionMembers.value = session.members.values.toList()
-        }
+        val names = memberNames(session)
+        val update = JSONObject().put("type", "session_update").put("session_id", sessionId).put("members", names.joinToString("|")).toString().toByteArray()
+        session.members.keys.forEach { if (!it.isClosed) writeDirect(it, 0, update) }
+        Bus.sessions.value = Bus.sessions.value.map { if (it.id == sessionId) it.copy(memberCount = names.size) else it }
+        if (Bus.currentSession.value?.id == sessionId) Bus.sessionMembers.value = names
     }
 
     fun createSession(sessionName: String, password: String?): String {
         val sessionId = java.util.UUID.randomUUID().toString().take(8)
         val passHash = if (!password.isNullOrEmpty()) hashPassword(sessionId, password) else null
         hostedSessions[sessionId] = SessionState(sessionId, sessionName, passHash)
-        
-        val session = Session(sessionId, sessionName, Store.myId, Store.activeName(), getLocalIPv4(), TCP_PORT, passHash != null, 1)
+        val session = Session(sessionId, sessionName, Store.myId, Store.activeName(), getLocalIPv4(), TCP_PORT, passHash != null, 0)
         Bus.sessions.value = Bus.sessions.value + session
         return sessionId
     }
@@ -235,48 +246,58 @@ object NetworkManager {
             try {
                 val s = Socket()
                 s.connect(InetSocketAddress(targetIp, targetPort), 3000)
+                s.tcpNoDelay = true
                 val json = JSONObject().put("type", "ring").put("from", Store.activeName()).put("session_id", sessionId)
                     .put("session_name", sessionName).put("host_ip", getLocalIPv4()).put("host_port", TCP_PORT).put("locked", locked)
-                sendJson(s, json.toString().toByteArray())
+                writeDirect(s, 0, json.toString().toByteArray())
                 s.close()
-            } catch (e: Exception) { Log.e(TAG, "Ring failed", e) }
+            } catch (e: Exception) {
+                Log.e(TAG, "Ring failed", e)
+                Bus.toastMsg.value = "Could not reach device"
+            }
+        }
+    }
+
+    fun enterHostedSession(sessionId: String) {
+        val session = hostedSessions[sessionId] ?: return
+        session.hostIn = true
+        broadcastSessionUpdate(sessionId)
+    }
+
+    fun leaveHostedSession(sessionId: String) {
+        val session = hostedSessions[sessionId] ?: return
+        session.hostIn = false
+        if (session.members.isEmpty()) {
+            hostedSessions.remove(sessionId)
+            Bus.sessions.value = Bus.sessions.value.filter { it.id != sessionId }
+        } else {
+            broadcastSessionUpdate(sessionId)
         }
     }
 
     fun joinSession(sessionId: String, hostIp: String, hostPort: Int, password: String?) {
         connectToHost(hostIp, hostPort) { socket ->
-            clientConnections[sessionId] = socket
             val json = JSONObject().put("type", "join_session").put("session_id", sessionId)
                 .put("password", password ?: "").put("name", Store.activeName())
-            sendJson(socket, json.toString().toByteArray())
+            writeDirect(socket, 0, json.toString().toByteArray())
         }
     }
 
     fun leaveSession(sessionId: String) {
-        val s = clientConnections[sessionId]
+        val s = clientConnections.remove(sessionId)
         if (s != null) {
-            sendJson(s, JSONObject().put("type", "leave_session").toString().toByteArray())
+            writeDirect(s, 0, JSONObject().put("type", "leave_session").toString().toByteArray())
             runCatching { s.close() }
-            clientConnections.remove(sessionId)
         }
-        if (hostedSessions.containsKey(sessionId)) {
-            hostedSessions.remove(sessionId)
-            Bus.sessions.value = Bus.sessions.value.filter { it.id != sessionId }
-        }
-        Bus.currentSession.value = null
-        Bus.sessionMembers.value = emptyList()
-        com.tacticom.app.Controller.stopAudio()
     }
 
     fun broadcastAudio(sessionId: String, sender: Socket?, data: ByteArray) {
         val session = hostedSessions[sessionId]
         if (session != null) {
-            session.members.keys.forEach { memberSocket ->
-                if (memberSocket != sender && !memberSocket.isClosed) sendAudio(memberSocket, data)
-            }
+            session.members.keys.forEach { m -> if (m != sender && !m.isClosed) outQueue.offer(m to (1.toByte() to data)) }
         } else {
             val hostSocket = clientConnections[sessionId]
-            if (hostSocket != null && !hostSocket.isClosed) sendAudio(hostSocket, data)
+            if (hostSocket != null && !hostSocket.isClosed) outQueue.offer(hostSocket to (1.toByte() to data))
         }
     }
 
@@ -284,9 +305,6 @@ object NetworkManager {
         val md = MessageDigest.getInstance("SHA-256")
         return md.digest("$sessionId:$password".toByteArray()).joinToString("") { "%02x".format(it) }
     }
-
-    private fun sendJson(s: Socket, bytes: ByteArray) { outQueue.offer(s to (0.toByte() to bytes)) }
-    private fun sendAudio(s: Socket, bytes: ByteArray) { outQueue.offer(s to (1.toByte() to bytes)) }
 
     fun getLocalIPv4(): String {
         try {
@@ -341,9 +359,22 @@ object NetworkManager {
         }
         thread(name = "prune") {
             while (running) {
-                Thread.sleep(5000); val now = System.currentTimeMillis()
+                Thread.sleep(5000)
+                val now = System.currentTimeMillis()
                 val stale = lastSeen.filter { now - it.value > 10000 }.keys
                 if (stale.isNotEmpty()) { stale.forEach { peers.remove(it); lastSeen.remove(it) }; Bus.peers.value = peers.values.sortedBy { it.name } }
+
+                // Host: delete empty sessions older than 60s that nobody entered
+                hostedSessions.values.toList().forEach { ses ->
+                    if (!ses.hostIn && ses.members.isEmpty() && now - ses.createdAt > 60000) {
+                        hostedSessions.remove(ses.id)
+                        Bus.sessions.value = Bus.sessions.value.filter { it.id != ses.id }
+                    }
+                }
+                // Client: remove sessions whose host went offline
+                Bus.sessions.value = Bus.sessions.value.filter { s ->
+                    s.hostId == Store.myId || hostedSessions.containsKey(s.id) || clientConnections.containsKey(s.id) || peers.containsKey(s.hostId)
+                }
             }
         }
     }
