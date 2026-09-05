@@ -20,7 +20,6 @@ class AudioEngine(private val ctx: Context) {
     }
 
     @Volatile var transmitting = false
-    @Volatile var earpiece = false
     @Volatile var onChunk: ((ByteArray) -> Unit)? = null
 
     private var record: AudioRecord? = null
@@ -29,9 +28,6 @@ class AudioEngine(private val ctx: Context) {
     @Volatile private var capturing = false
     @Volatile private var playing = false
 
-    private val audioManager get() = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-    // Only start capturing when PTT is pressed
     @SuppressLint("MissingPermission")
     fun startCapture() {
         if (capturing) return
@@ -50,7 +46,6 @@ class AudioEngine(private val ctx: Context) {
                     val read = rec.read(buf, 0, CHUNK)
                     if (read <= 0) continue
                     
-                    // Calculate VU meter
                     var sum = 0.0
                     for (i in 0 until read step 2) {
                         val v = ((buf[i + 1].toInt() shl 8) or (buf[i].toInt() and 0xFF)) / 32768.0
@@ -58,7 +53,6 @@ class AudioEngine(private val ctx: Context) {
                     }
                     Bus.vu.value = sqrt(sum / (read / 2)).toFloat()
                     
-                    // Only send audio when actually transmitting
                     if (transmitting) onChunk?.invoke(buf.copyOf(read))
                 }
                 runCatching { rec.stop(); rec.release() }
@@ -71,19 +65,16 @@ class AudioEngine(private val ctx: Context) {
 
     fun stopCapture() { 
         capturing = false 
-        Bus.vu.value = 0f // Reset VU meter when not capturing
+        Bus.vu.value = 0f
     }
 
-    // Playback runs continuously to receive audio
     fun startPlayback() {
         if (playing) return
         playing = true
-        applyRouting()
         thread(name = "audio-play") {
             val min = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            val stream = if (earpiece) AudioManager.STREAM_VOICE_CALL else AudioManager.STREAM_MUSIC
             @Suppress("DEPRECATION")
-            val tr = AudioTrack(stream, RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, CHUNK * 8), AudioTrack.MODE_STREAM)
+            val tr = AudioTrack(AudioManager.STREAM_MUSIC, RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, CHUNK * 8), AudioTrack.MODE_STREAM)
             track = tr
             tr.play()
             while (playing) {
@@ -103,15 +94,5 @@ class AudioEngine(private val ctx: Context) {
     fun feed(data: ByteArray) {
         if (queue.remainingCapacity() == 0) queue.poll()
         queue.offer(data)
-    }
-
-    fun applyRouting() {
-        if (earpiece) {
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            audioManager.isSpeakerphoneOn = false
-        } else {
-            audioManager.mode = AudioManager.MODE_NORMAL
-            audioManager.isSpeakerphoneOn = false
-        }
     }
 }
